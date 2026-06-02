@@ -3,7 +3,14 @@ DNA to RNA Transcription Pipeline
 
 Reads multi-FASTA DNA datasets using a lazy generator, transcribes the coding
 strand into mRNA using C-optimized translation, and streams the output to a TSV.
+
+Usage:
+    $ python3 DNA_transcripton_genome.py -i coding_dna.fasta -o transcribed_rna.tsv
 """
+
+__author__ = Jan Ephraim R. Vallente
+__email__ = ephrvallente@gmail.com
+__version__ = 1.0.0
 
 import sys
 from utils import lazy_parse_fasta
@@ -21,11 +28,18 @@ def transcribe_to_rna(dna: str) -> str:
     DNA is copied into RNA. Computationally, this is modeled by a direct
     character substitution of 'T' to 'U'.
 
+    Architecture & Performance:
+    Utilizes Python's native `str.translate()` backed by a C-optimized 
+    translation map for instantaneous character substitution.
+
     Args:
-        dna_sequence: A raw string representing the coding DNA strand.
+        dna: A raw string representing the coding DNA strand.
 
     Returns:
-        The transcribed RNA sequence string.
+        The transcribed RNA sequence.
+
+    Raises:
+        ValueError: If the input sequence contains any invalid characters.
     """
 
     unique_characters = set(dna)
@@ -40,10 +54,10 @@ def transcribe_to_rna(dna: str) -> str:
 
 def main():
     """
-    Pipeline manager for I/O operations.
+    Pipeline manager for transcription I/O operations.
 
-    Reads raw DNA sequences from an input file, computes their reverse
-    complements, and writes the aggregated results to an output file.
+    Reads raw DNA sequences, orchestrates the transcription engine, 
+    and writes the aggregated results to an output TSV file.
     """
     args = base_parser("DNA to RNA Transcription Pipeline").parse_args()
     input_path = args.input

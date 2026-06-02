@@ -2,10 +2,16 @@
 Multi-FASTA Quality Control Engine
 
 Processes massive multi-FASTA datasets (including multi-gigabyte chromosomes).
-Reads the file line-by-line (avoiding byte-chunking header corruption), calculates
-nucleotide counts on the fly, and discards the sequence string immediately.
-Guarantees strict O(1) memory usage.
+Reads the file line-by-line, calculates nucleotide counts on the fly, and 
+discards the sequence string immediately to guarantee strict O(1) memory usage.
+
+Usage:
+    $ python3 stream_nuc_count.py -i massive_genome.fasta -o counts.tsv
 """
+
+__author__ = Jan Ephraim R. Vallente
+__email__ = ephrvallente@gmail.com
+__version__ = 1.0.0
 
 import sys
 from pathlib import Path
@@ -20,14 +26,17 @@ def stream_nuc_count(file_path: str | Path) -> Iterator[tuple[str, dict[str, int
     Architecture & Performance:
     Unlike standard parsers that buffer a sequence until the next '>' is found,
     this engine processes the math line-by-line. The raw sequence string is
-    destroyed immediately after the math is computed.
-    Memory usage remains near zero, even if a single sequence is 50 Gigabytes long.
+    destroyed immediately after the math is computed. Memory usage remains 
+    near zero, even if a single sequence is 50 Gigabytes long.
 
     Args:
         file_path: The system path to the target FASTA file.
 
     Yields:
         A tuple containing the FASTA ID and a dictionary of its base counts.
+        
+    Raises:
+        ValueError: If the input file cannot be found or the FASTA is malformed.
     """
     current_id = ""
     totals = {"A": 0, "C": 0, "G": 0, "T": 0, "Anomalies": 0}
@@ -91,7 +100,12 @@ def stream_nuc_count(file_path: str | Path) -> Iterator[tuple[str, dict[str, int
 
 
 def main() -> None:
-    """Pipeline manager for I/O routing and TSV formatting."""
+    """
+    Pipeline manager for I/O routing and TSV formatting.
+    
+    Reads standard CLI arguments, processes the streaming nucleotide counts, 
+    and safely outputs a machine-readable tab-separated matrix.
+    """
 
     args = base_parser("Nucleotide Count Pipeline for Genome Assemblies").parse_args()
 

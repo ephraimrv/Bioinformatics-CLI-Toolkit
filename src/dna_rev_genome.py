@@ -3,8 +3,15 @@ Reverse Complement Pipeline
 
 Reads multiple sequences from a FASTA file using a lazy generator, calculates
 the reverse complement (3'-to-5') of each sequence using C-optimized translation,
-and streams the new sequences to an output FASTA file.
+and streams the new sequences to an output TSV file.
+
+Usage:
+    $ python3 dna_rev_genome.py -i raw_dna.fasta -o reverse_complements.tsv
 """
+
+__author__ = Jan Ephraim R. Vallente
+__email__ = ephrvallente@gmail.com
+__version__ = 1.0.0
 
 import sys
 from utils import lazy_parse_fasta
@@ -17,17 +24,23 @@ def reverse_complement(dna: str) -> str:
     """
     Calculate the reverse complement of a DNA string using a dictionary map.
 
+    Biological Context:
     Simulates the anti-parallel nature of double-stranded DNA by generating
     the 3'-to-5' complementary strand from a 5'-to-3' sequence.
 
+    Architecture & Performance:
+    Executes a rapid string reversal (`[::-1]`) followed by a C-optimized 
+    `str.translate()` character swap. 
+
     Args:
-        dna (str): A DNA sequence containing only A, T, G, C.
+        dna: A DNA sequence containing only standard nucleotides.
 
     Returns:
-        str: The reverse complement sequence.
+        The sequence of the reverse complement strand.
 
     Raises:
-        ValueError: If the string contains any character other than A, T, G, C.
+        ValueError: If the string contains any anomalous characters outside the 
+            standard IUPAC base set.
     """
 
     unique_characters = set(dna)
@@ -43,10 +56,10 @@ def reverse_complement(dna: str) -> str:
 
 def main():
     """
-    Pipeline manager for I/O operations.
+    Pipeline manager for reverse complement I/O operations.
 
-    Reads raw DNA sequences from an input file, computes their reverse
-    complements, and writes the aggregated results to an output file.
+    Reads raw DNA sequences, orchestrates the reversal engine, 
+    and safely streams the results to an output TSV file.
     """
     args = base_parser("Genome Reverse Complement").parse_args()
     input_path = args.input

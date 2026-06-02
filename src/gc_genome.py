@@ -4,7 +4,14 @@ GC Content & Assembly QC Pipeline
 Calculates per-contig GC percentage and the statistically true whole-genome
 GC content of a multi-FASTA assembly. Outputs results to the terminal and
 saves a TSV file suitable for downstream contamination checks (e.g., GC vs Length).
+
+Usage:
+    $ python3 gc_genome.py -i input_assembly.fasta -o gc_results.tsv
 """
+
+__author__ = Jan Ephraim R. Vallente
+__email__ = ephrvallente@gmail.com
+__version__ = 1.0.0
 
 import sys
 from stream_nuc_count import stream_nuc_count
@@ -16,7 +23,8 @@ def main() -> None:
     Command-line interface for calculating GC content.
 
     Parses arguments, orchestrates the memory-safe stream_nuc_count generator,
-    aggregates global genome statistics, and writes a formatted TSV report.
+    aggregates global genome statistics, and writes a formatted TSV report 
+    along with a summary log file.
     """
     args = base_parser("GC Content Pipeline for Genome Assemblies").parse_args()
     input_path = args.input

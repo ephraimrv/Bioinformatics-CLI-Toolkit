@@ -2,9 +2,13 @@
 Bioinformatics Standard Utilities
 
 Centralized functions for file routing and genomic data parsing.
-Designed to handle both sandbox (Rosalind) datasets and industrial
-(NCBI/UniProt) genomic files with strict validation.
+Designed to handle both sandbox datasets and industrial genomic files 
+with strict validation and memory-safe lazy evaluation.
 """
+
+__author__ = Jan Ephraim R. Vallente
+__email__ = ephrvallente@gmail.com
+__version__ = 1.0.0
 
 import argparse
 from pathlib import Path
@@ -66,6 +70,12 @@ MONOISOTOPIC_MASS_TABLE: dict[str, float] = {
 def base_parser(description_text: str) -> argparse.ArgumentParser:
     """
     Creates a standard argument parser with default input/output arguments.
+
+    Args:
+        description_text: The help text displayed when the user invokes `--help`.
+
+    Returns:
+        A configured parser object ready to accept additional arguments.
     """
     parser = argparse.ArgumentParser(description=description_text)
     parser.add_argument(
@@ -78,7 +88,19 @@ def base_parser(description_text: str) -> argparse.ArgumentParser:
 
 
 def parse_fasta(fasta_string: str) -> dict[str, str]:
-    """Parses a raw FASTA text string into a dictionary of ID to sequence mappings."""
+    """
+    Parses a raw FASTA text string into a dictionary of ID to sequence mappings.
+
+    Args:
+        fasta_string: A complete, raw multi-FASTA formatted text string.
+
+    Returns:
+        A dictionary where the keys are sequence IDs and values are the concatenated 
+        DNA/RNA strings.
+
+    Raises:
+        ValueError: If the FASTA structure is malformed (e.g., missing headers).
+    """
     fasta_dict: dict[str, str] = {}
     fasta_id: str = ""
     seq_buffer: list[str] = []
@@ -114,7 +136,23 @@ def parse_fasta(fasta_string: str) -> dict[str, str]:
 
 
 def lazy_parse_fasta(file_path: str | Path) -> Iterator[tuple[str, str]]:
-    """Yields one (ID, sequence) tuple at a time from a FASTA file on disk."""
+    """
+    Yields one (ID, sequence) tuple at a time from a FASTA file on disk.
+
+    Architecture & Performance:
+    Acts as a lazy generator. It reads the file line-by-line, buffering only a single 
+    sequence into memory at a time. This allows the safe processing of theoretically 
+    infinite FASTA files without overwhelming system RAM.
+
+    Args:
+        file_path: The file path object or string pointing to the target FASTA file.
+
+    Yields:
+        A tuple containing the sequence identifier and the concatenated sequence string.
+        
+    Raises:
+        ValueError: If the FASTA structure is malformed.
+    """
     fasta_id = ""
     seq_buffer = []
 
@@ -148,7 +186,19 @@ def lazy_parse_fasta(file_path: str | Path) -> Iterator[tuple[str, str]]:
 
 
 def get_rosalind_paths(input_filename: str, output_filename: str) -> tuple[Path, Path]:
-    """Constructs absolute paths for standardized Rosalind input/output routing."""
+    """
+    Constructs absolute paths for standardized Rosalind input/output routing.
+
+    Args:
+        input_filename: The name of the downloaded dataset file.
+        output_filename: The desired name for the results file.
+
+    Returns:
+        A tuple containing the resolved absolute paths for the input and output.
+
+    Raises:
+        FileNotFoundError: If the input file does not exist in the expected directory.
+    """
     utils_dir = Path(__file__).resolve().parent
     input_path = utils_dir.parent / "dataset_bioinformatics_stronghold" / input_filename
     output_path = (
