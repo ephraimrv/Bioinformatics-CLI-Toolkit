@@ -20,7 +20,7 @@ Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import sys
 from typing import Generator
@@ -66,7 +66,7 @@ def prot_frame_exhaustive(
         for i in range(start, seq_len - 2, 3):
             codon = dna[i : i + 3]
 
-            amino = DNA_CODON_TABLE.get(codon)
+            amino = DNA_CODON_TABLE.get(codon, "X")
 
             if amino == "Stop":
                 if len(prot_seq) >= min_prot_len:
