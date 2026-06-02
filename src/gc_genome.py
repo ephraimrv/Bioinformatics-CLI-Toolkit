@@ -11,7 +11,7 @@ Usage:
 
 __author__ = 'Jan Ephraim R. Vallente'
 __email__ = 'ephrvallente@gmail.com'
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 import sys
 from stream_nuc_count import stream_nuc_count
@@ -79,9 +79,14 @@ def main() -> None:
                 "Pipeline Halted: No valid ACGT bases found across all sequences."
             )
 
-    except (ValueError, PermissionError) as e:
+    except KeyboardInterrupt:
         output_path.unlink(missing_ok=True)
-        sys.exit(f"Pipeline Halted: {e}")
+        sys.exit(
+            "\nPipeline Halted: Scan interrupted by user. Partial output safely removed."
+        )
+    except (ValueError, FileNotFoundError, PermissionError) as e:
+        output_path.unlink(missing_ok=True)
+        sys.exit(f"\nSystem Exit: {e}")
 
     true_genome_gc = ((global_g + global_c) / global_valid) * 100.0
 

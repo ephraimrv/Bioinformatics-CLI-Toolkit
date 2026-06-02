@@ -2,13 +2,13 @@
 Bioinformatics Standard Utilities
 
 Centralized functions for file routing and genomic data parsing.
-Designed to handle both sandbox datasets and industrial genomic files 
+Designed to handle both sandbox datasets and industrial genomic files
 with strict validation and memory-safe lazy evaluation.
 """
 
-__author__ = 'Jan Ephraim R. Vallente'
-__email__ = 'ephrvallente@gmail.com'
-__version__ = '1.0.0'
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
+__version__ = "1.0.1"
 
 import argparse
 from pathlib import Path
@@ -67,6 +67,25 @@ MONOISOTOPIC_MASS_TABLE: dict[str, float] = {
 # fmt: on
 
 
+def wrap_fasta(sequence: str, width: int = 60) -> str:
+    """
+    Wraps a continuous sequence string into multiple lines.
+
+    Biological Context:
+    Standard FASTA format requires sequences to be wrapped at 60 or 70
+    characters to prevent buffer overflows in legacy C-based downstream
+    tools (like BLAST or samtools).
+
+    Args:
+        sequence: The raw, continuous DNA/RNA/Protein string.
+        width: The maximum number of characters per line. Defaults to 60.
+
+    Returns:
+        The properly line-wrapped sequence string.
+    """
+    return "\n".join(sequence[i : i + width] for i in range(0, len(sequence), width))
+
+
 def base_parser(description_text: str) -> argparse.ArgumentParser:
     """
     Creates a standard argument parser with default input/output arguments.
@@ -95,7 +114,7 @@ def parse_fasta(fasta_string: str) -> dict[str, str]:
         fasta_string: A complete, raw multi-FASTA formatted text string.
 
     Returns:
-        A dictionary where the keys are sequence IDs and values are the concatenated 
+        A dictionary where the keys are sequence IDs and values are the concatenated
         DNA/RNA strings.
 
     Raises:
@@ -140,8 +159,8 @@ def lazy_parse_fasta(file_path: str | Path) -> Iterator[tuple[str, str]]:
     Yields one (ID, sequence) tuple at a time from a FASTA file on disk.
 
     Architecture & Performance:
-    Acts as a lazy generator. It reads the file line-by-line, buffering only a single 
-    sequence into memory at a time. This allows the safe processing of theoretically 
+    Acts as a lazy generator. It reads the file line-by-line, buffering only a single
+    sequence into memory at a time. This allows the safe processing of theoretically
     infinite FASTA files without overwhelming system RAM.
 
     Args:
@@ -149,7 +168,7 @@ def lazy_parse_fasta(file_path: str | Path) -> Iterator[tuple[str, str]]:
 
     Yields:
         A tuple containing the sequence identifier and the concatenated sequence string.
-        
+
     Raises:
         ValueError: If the FASTA structure is malformed.
     """

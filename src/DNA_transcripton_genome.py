@@ -10,7 +10,7 @@ Usage:
 
 __author__ = 'Jan Ephraim R. Vallente'
 __email__ = 'ephrvallente@gmail.com'
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 import sys
 from utils import lazy_parse_fasta
@@ -52,7 +52,7 @@ def transcribe_to_rna(dna: str) -> str:
     return dna.translate(_RNA_MAP)
 
 
-def main():
+def main() -> None:
     """
     Pipeline manager for transcription I/O operations.
 
@@ -79,10 +79,14 @@ def main():
         if sequences_processed == 0:
             raise ValueError("The input file contained no valid FASTA records.")
 
-    # EAFP: Catching all our errors gracefully here at the execution layer.
+    except KeyboardInterrupt:
+        output_path.unlink(missing_ok=True)
+        sys.exit(
+            "\nPipeline Halted: Scan interrupted by user. Partial output safely removed."
+        )
     except (ValueError, FileNotFoundError, PermissionError) as e:
         output_path.unlink(missing_ok=True)
-        sys.exit(f"Pipeline Halted: {e}")
+        sys.exit(f"\nSystem Exit: {e}")
 
     print(f"\nSuccess! {sequences_processed} sequences processed with O(1) memory.")
     print(f"Machine-readable matrix written to: {output_path.name}")

@@ -11,7 +11,7 @@ Usage:
 
 __author__ = 'Jan Ephraim R. Vallente'
 __email__ = 'ephrvallente@gmail.com'
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 import sys
 from pathlib import Path
@@ -142,11 +142,15 @@ def main() -> None:
                 "Pipeline Halted: The input file contained no valid FASTA records."
             )
 
-    # EAFP: Catching all our errors gracefully here at the execution layer.
-    except (ValueError, PermissionError) as e:
-        # Top-level CLI wrapper catches errors and exits cleanly without tracebacks
+    except KeyboardInterrupt:
         output_path.unlink(missing_ok=True)
-        sys.exit(f"Pipeline Halted: {e}")
+        sys.exit(
+            "\nPipeline Halted: Scan interrupted by user. Partial output safely removed."
+        )
+
+    except (ValueError, FileNotFoundError, PermissionError) as e:
+        output_path.unlink(missing_ok=True)
+        sys.exit(f"\nSystem Exit: {e}")
 
     print(f"\nSuccess! {sequences_processed} sequences processed with O(1) memory.")
     print(f"Machine-readable matrix written to: {output_path.name}")
