@@ -9,9 +9,9 @@ Usage:
     $ python3 dna_rev_genome.py -i raw_dna.fasta -o reverse_complements.tsv
 """
 
-__author__ = Jan Ephraim R. Vallente
-__email__ = ephrvallente@gmail.com
-__version__ = 1.0.0
+__author__ = 'Jan Ephraim R. Vallente'
+__email__ = 'ephrvallente@gmail.com'
+__version__ = '1.0.0'
 
 import sys
 from utils import lazy_parse_fasta

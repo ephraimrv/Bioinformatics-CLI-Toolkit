@@ -9,9 +9,9 @@ Usage:
     $ python3 stream_nuc_count.py -i massive_genome.fasta -o counts.tsv
 """
 
-__author__ = Jan Ephraim R. Vallente
-__email__ = ephrvallente@gmail.com
-__version__ = 1.0.0
+__author__ = 'Jan Ephraim R. Vallente'
+__email__ = 'ephrvallente@gmail.com'
+__version__ = '1.0.0'
 
 import sys
 from pathlib import Path

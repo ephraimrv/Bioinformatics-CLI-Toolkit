@@ -8,9 +8,9 @@ Usage:
     $ python3 DNA_transcripton_genome.py -i coding_dna.fasta -o transcribed_rna.tsv
 """
 
-__author__ = Jan Ephraim R. Vallente
-__email__ = ephrvallente@gmail.com
-__version__ = 1.0.0
+__author__ = 'Jan Ephraim R. Vallente'
+__email__ = 'ephrvallente@gmail.com'
+__version__ = '1.0.0'
 
 import sys
 from utils import lazy_parse_fasta

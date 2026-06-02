@@ -6,9 +6,9 @@ Designed to handle both sandbox datasets and industrial genomic files
 with strict validation and memory-safe lazy evaluation.
 """
 
-__author__ = Jan Ephraim R. Vallente
-__email__ = ephrvallente@gmail.com
-__version__ = 1.0.0
+__author__ = 'Jan Ephraim R. Vallente'
+__email__ = 'ephrvallente@gmail.com'
+__version__ = '1.0.0'
 
 import argparse
 from pathlib import Path

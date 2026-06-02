@@ -9,9 +9,9 @@ Usage:
     $ python3 gc_genome.py -i input_assembly.fasta -o gc_results.tsv
 """
 
-__author__ = Jan Ephraim R. Vallente
-__email__ = ephrvallente@gmail.com
-__version__ = 1.0.0
+__author__ = 'Jan Ephraim R. Vallente'
+__email__ = 'ephrvallente@gmail.com'
+__version__ = '1.0.0'
 
 import sys
 from stream_nuc_count import stream_nuc_count
