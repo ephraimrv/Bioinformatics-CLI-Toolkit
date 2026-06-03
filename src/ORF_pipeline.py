@@ -61,7 +61,7 @@ def prot_frame_heuristic(
 
         for i in range(start, seq_len - 2, 3):
             codon = dna[i : i + 3]
-            amino = DNA_CODON_TABLE.get(codon, "X")
+            amino = DNA_CODON_TABLE.get(codon)
 
             if amino == "Stop":
                 if i not in processed_stops:
