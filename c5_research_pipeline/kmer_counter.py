@@ -10,7 +10,7 @@ distributions, normalizes them by sequence length (CPK - Counts per Kilobase),
 and identifies motifs enriched in one region versus the other.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
+Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

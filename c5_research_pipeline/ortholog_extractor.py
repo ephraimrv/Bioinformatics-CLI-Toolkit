@@ -11,7 +11,7 @@ the same physical locus, it aggregates them into a single FASTA header
 to prevent duplicate sequence outputs.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-08
+Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

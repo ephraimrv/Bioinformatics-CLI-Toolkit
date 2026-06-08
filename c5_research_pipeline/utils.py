@@ -6,7 +6,7 @@ Provides standardized handling for GenBank and FASTA data with integrated
 error validation and memory-safe processing.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-02
+Date: 2026-06-01
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 """

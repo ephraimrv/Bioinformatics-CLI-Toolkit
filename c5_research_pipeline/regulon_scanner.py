@@ -9,7 +9,7 @@ IUPAC/Regex operator footprint and compiles matches into a genomic matrix
 suitable for network analysis.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
+Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

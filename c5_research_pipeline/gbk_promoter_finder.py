@@ -8,7 +8,7 @@ orientation to extract the correct upstream sequence (applying reverse
 complementation where necessary), and scans the region for specific motif hits.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
+Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

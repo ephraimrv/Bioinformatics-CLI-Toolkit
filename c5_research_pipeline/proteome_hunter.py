@@ -9,7 +9,7 @@ deduplication to ensure statistical validity for downstream motif analysis,
 and exports the result to a FASTA file.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
+Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

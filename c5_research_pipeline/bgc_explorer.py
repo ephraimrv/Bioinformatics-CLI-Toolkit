@@ -8,7 +8,7 @@ annotations, summarizes biosynthetic roles, and exports functional manifests
 for secondary metabolite clusters.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
+Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

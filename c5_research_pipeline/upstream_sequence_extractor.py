@@ -8,7 +8,7 @@ This tool is used to empirically verify structural conservation in the
 regulatory regions flanking orthologous genes across different genomes.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-08
+Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

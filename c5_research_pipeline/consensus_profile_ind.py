@@ -8,7 +8,7 @@ counts. It computes a PPM and Shannon entropy to quantify positional
 conservation, outputting a machine-readable TSV matrix for downstream analysis.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
+Date: 2026-06-03
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 

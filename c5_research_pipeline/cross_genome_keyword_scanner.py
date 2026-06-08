@@ -8,7 +8,7 @@ empirically verify the presence of specific protein families (e.g., 'lactobin',
 as both a tabular TSV matrix and a sequence-ready FASTA file.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-08
+Date: 2026-06-07
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
