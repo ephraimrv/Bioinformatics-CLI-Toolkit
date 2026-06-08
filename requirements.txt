@@ -1,1 +1,2 @@
-biopython>=1.84
+dna-features-viewer>=3.1.2
+matplotlib>=3.5.0
