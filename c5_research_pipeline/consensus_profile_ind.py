@@ -7,8 +7,6 @@ This script ingests aligned FASTA sequences to perform column-wise frequency
 counts. It computes a PPM and Shannon entropy to quantify positional
 conservation, outputting a machine-readable TSV matrix for downstream analysis.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-03
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -16,6 +14,9 @@ Example Usage:
     $ python3 consensus_profile_ind.py -i alignment.fasta -o profile_matrix.tsv
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.2"
 
 import math

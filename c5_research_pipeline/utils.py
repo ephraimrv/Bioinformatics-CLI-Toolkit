@@ -5,12 +5,13 @@ Centralized utility functions for file routing, parsing, and sequence manipulati
 Provides standardized handling for GenBank and FASTA data with integrated
 error validation and memory-safe processing.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-01
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.5"
 
 import argparse

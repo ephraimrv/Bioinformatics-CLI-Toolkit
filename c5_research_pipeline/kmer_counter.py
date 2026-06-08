@@ -9,8 +9,6 @@ This tool extracts upstream sequences for two genes, computes k-mer frequency
 distributions, normalizes them by sequence length (CPK - Counts per Kilobase),
 and identifies motifs enriched in one region versus the other.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -18,7 +16,10 @@ Example Usage:
     $ python3 kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -o analysis.tsv
 """
 
-__version__ = "1.0.1"
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
+__version__ = "1.0.2"
 
 import sys
 import argparse

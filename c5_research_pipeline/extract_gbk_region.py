@@ -9,8 +9,6 @@ tag normalization (e.g., stripping NCBI 'RS' prefixes), performs coordinate
 filtering, and writes both nucleotide and translated protein sequences
 into synchronized FASTA files.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -22,6 +20,9 @@ Example Usage:
     $ python3 extract_gbk_region.py -i GCF_056530425.1.gbff -p "RHP56_" -s 5 -e 20 -o NCBI_locus
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.2"
 
 import sys

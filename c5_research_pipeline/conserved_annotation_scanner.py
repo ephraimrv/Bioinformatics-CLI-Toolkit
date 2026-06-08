@@ -13,8 +13,6 @@ Output matrices are strictly sorted to prioritize the most conserved targets:
 
 It can output both TSV matrices and matching FASTA sequence files.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -29,6 +27,9 @@ Example Usage:
     $ python3 conserved_annotation_scanner.py -i references/ --min_genomes 2 --exact -o strict_two.tsv
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.2"
 
 import sys

@@ -7,8 +7,6 @@ This tool locates a target gene by its locus tag, calculates the strand
 orientation to extract the correct upstream sequence (applying reverse
 complementation where necessary), and scans the region for specific motif hits.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -16,6 +14,9 @@ Example Usage:
     $ python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.3"
 
 import re

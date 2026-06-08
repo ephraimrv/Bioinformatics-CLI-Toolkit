@@ -10,8 +10,6 @@ and extracting orthologous protein sequences. If multiple targets map to
 the same physical locus, it aggregates them into a single FASTA header
 to prevent duplicate sequence outputs.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -19,6 +17,9 @@ Example Usage:
     $ python3 ortholog_extractor.py -t target.faa -r references/ -o extracted_orthologs.faa
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.1"
 
 import sys

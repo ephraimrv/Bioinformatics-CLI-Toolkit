@@ -7,8 +7,6 @@ Extracts customizable upstream promoter regions and formats them into a
 single MEME-compatible FASTA file for motif discovery. Includes automatic
 deduplication to prevent skewed MEME statistical calculations.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-05
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -20,6 +18,9 @@ Example usage:
       -o C5_promoters.fasta -u 150 -k bacteriocin lactobin cerein
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.2"
 
 import sys

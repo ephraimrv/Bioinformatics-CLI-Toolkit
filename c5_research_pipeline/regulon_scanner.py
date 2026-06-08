@@ -8,8 +8,6 @@ a GenBank assembly. It performs a regex-based motif search for a provided
 IUPAC/Regex operator footprint and compiles matches into a genomic matrix
 suitable for network analysis.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -17,6 +15,9 @@ Example Usage:
     $ python3 regulon_scanner.py -i C5_genome.gbk -u 200 -m "GCGCAG[CT]G[GT]T[TA]AAAT" -o regulon.tsv
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.2"
 
 import re

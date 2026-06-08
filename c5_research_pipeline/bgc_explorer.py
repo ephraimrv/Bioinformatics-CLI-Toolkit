@@ -7,8 +7,6 @@ This pipeline reads GenBank files produced by antiSMASH. It extracts gene
 annotations, summarizes biosynthetic roles, and exports functional manifests
 for secondary metabolite clusters.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -17,6 +15,9 @@ Example Usage:
     $ python3 bgc_explorer.py -i C5_prokka_result.gbk -o C5_manifest.tsv
 """
 
+
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.1"
 import sys
 import re

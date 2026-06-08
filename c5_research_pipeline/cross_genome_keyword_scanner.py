@@ -13,8 +13,6 @@ Output matrices are strictly sorted to prioritize the most conserved targets:
 
 It supports exporting results as both a tabular TSV matrix and a sequence-ready FASTA file.
 
-Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
-Date: 2026-06-07
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
@@ -29,6 +27,8 @@ Example Usage:
     $ python3 cross_genome_keyword_scanner.py -i references/ -k bacteriocin --min_genomes 3 --exact -o strict_three.tsv
 """
 
+__author__ = "Jan Ephraim R. Vallente"
+__email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.2"
 
 import sys
