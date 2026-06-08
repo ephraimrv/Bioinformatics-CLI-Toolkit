@@ -1,135 +1,155 @@
 """
-Genomic Coordinate Extractor
+Figure 3 Generator: Promoter Region Architecture Schematic
 
-Extracts absolute start, end, and strand coordinates for a specific range
-of locus tags from a GenBank file. Outputs a structured TSV file designed
-for seamless ingestion by downstream visualization scripts.
+Draws a high-resolution, vector-based structural comparison of two promoter
+regions to illustrate the absence of regulatory motifs in foreign loci.
 
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
 Example usage:
-    $ python3 get_coordinates.py -i input.gbk -o coords.tsv -p "ctg1_" -s 46 -e 74
+    $ python3 generate_figure3.py
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
-import argparse
-import contextlib
-from Bio import SeqIO
-from utils import base_parser
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+# --- FIGURE PARAMETERS & MAGIC NUMBERS ---
+TRACK_Y_ANCESTRAL = 2.0
+TRACK_Y_FOREIGN = -1.0
+MOTIF_START = -85
+MOTIF_LENGTH = 15
+
+COLOR_MOTIF = "#ce93d8"  # Orchid purple — Regulatory Element
+COLOR_ATG_ANCESTRAL = "#4caf50"  # Green
+COLOR_ATG_FOREIGN = "#ef5350"  # Red
+COLOR_DNA_BACKBONE = "#555555"
+COLOR_RULER = "#888888"
 
 
-def setup_cli() -> argparse.Namespace:
-    parser = base_parser(
-        description_text="Extracts genomic coordinates of CDS features to a TSV matrix.",
+def main():
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    # Clean canvas
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+    ax.get_yaxis().set_visible(False)
+    ax.get_xaxis().set_visible(False)
+
+    # ---------------------------------------------------------
+    # TRACK 1: Ancestral Lactobin Promoter
+    # ---------------------------------------------------------
+    ax.plot(
+        [-150, 0],
+        [TRACK_Y_ANCESTRAL, TRACK_Y_ANCESTRAL],
+        color=COLOR_DNA_BACKBONE,
+        lw=2,
     )
 
-    parser.add_argument(
-        "-p",
-        "--prefix",
-        type=str,
-        required=True,
-        help="The locus tag prefix (e.g., 'ctg1_')",
+    rect_atg1 = patches.Rectangle(
+        (0, TRACK_Y_ANCESTRAL - 0.15), 25, 0.3, color=COLOR_ATG_ANCESTRAL, alpha=0.9
+    )
+    ax.add_patch(rect_atg1)
+    ax.text(
+        5, TRACK_Y_ANCESTRAL + 0.3, "ctg1_68\n(Lactobin A)", fontsize=10, weight="bold"
+    )
+    ax.text(3, TRACK_Y_ANCESTRAL - 0.35, "ATG", fontsize=8, family="monospace")
+
+    rect_motif = patches.Rectangle(
+        (MOTIF_START, TRACK_Y_ANCESTRAL - 0.1),
+        MOTIF_LENGTH,
+        0.2,
+        color=COLOR_MOTIF,
+        zorder=3,
+    )
+    ax.add_patch(rect_motif)
+    ax.text(
+        MOTIF_START - 10,
+        TRACK_Y_ANCESTRAL + 0.2,
+        "Motif 1 Operator",
+        fontsize=9,
+        color="#7b1fa2",
+        weight="bold",
     )
 
-    parser.add_argument(
-        "-s",
-        "--start",
-        type=int,
-        required=False,
-        default=None,
-        help="Start gene number (Default: First available)",
-    )
-    parser.add_argument(
-        "-e",
-        "--end",
-        type=int,
-        required=False,
-        default=None,
-        help="End gene number (Default: Last available)",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = setup_cli()
-
-    effective_start = args.start if args.start is not None else 0
-    effective_end = args.end if args.end is not None else float("inf")
-
-    extracted_count = 0
-    extracted_nums = []
-
-    if args.output:
-        start_label = args.start if args.start is not None else "[First Available]"
-        end_label = args.end if args.end is not None else "[Last Available]"
-        print(f"[*] Reading {args.input.name}...", file=sys.stderr)
-        print(
-            f"[*] Extracting coordinates for {args.prefix}{start_label} to {args.prefix}{end_label}...\n",
-            file=sys.stderr,
+    # Scale Ruler
+    ruler_y1 = TRACK_Y_ANCESTRAL - 0.7
+    ax.plot([-150, 0], [ruler_y1, ruler_y1], color=COLOR_RULER, lw=1, linestyle="--")
+    for tick in [-150, -100, -50, 0]:
+        ax.plot(
+            [tick, tick], [ruler_y1 - 0.05, ruler_y1 + 0.05], color=COLOR_RULER, lw=1
         )
+        ax.text(tick - 5, ruler_y1 - 0.2, f"{tick} bp", fontsize=8, color="#666666")
 
-    # Safely handle file contexts; fallback to stdout if no output specified
-    ctx = (
-        open(args.output, "w", encoding="utf-8")
-        if args.output
-        else contextlib.nullcontext(sys.stdout)
+    # ---------------------------------------------------------
+    # TRACK 2: Foreign Blp Promoter
+    # ---------------------------------------------------------
+    ax.plot(
+        [-150, 0], [TRACK_Y_FOREIGN, TRACK_Y_FOREIGN], color=COLOR_DNA_BACKBONE, lw=2
     )
 
-    with ctx as out_handle:
-        # Write TSV Header
-        out_handle.write("locus_tag\tstart\tend\tstrand\tproduct\n")
+    rect_atg2 = patches.Rectangle(
+        (0, TRACK_Y_FOREIGN - 0.15), 25, 0.3, color=COLOR_ATG_FOREIGN, alpha=0.9
+    )
+    ax.add_patch(rect_atg2)
+    ax.text(
+        5, TRACK_Y_FOREIGN + 0.3, "ctg1_50\n(Blp locus)", fontsize=10, weight="bold"
+    )
+    ax.text(3, TRACK_Y_FOREIGN - 0.35, "ATG", fontsize=8, family="monospace")
 
-        try:
-            for record in SeqIO.parse(args.input, "genbank"):
-                for feature in record.features:
-                    if feature.type == "CDS":
-                        locus_tag = feature.qualifiers.get("locus_tag", [""])[0]
-                        product = feature.qualifiers.get("product", ["Unknown"])[0]
+    ax.text(
+        -120,
+        TRACK_Y_FOREIGN + 0.2,
+        "[ No Regulatory Motifs Discovered ]",
+        fontsize=10,
+        color="#d32f2f",
+        style="italic",
+    )
+    ax.text(
+        -120,
+        TRACK_Y_FOREIGN - 0.3,
+        "Unregulated, highly A/T-rich promoter space",
+        fontsize=9,
+        color="#666666",
+    )
 
-                        if locus_tag.startswith(args.prefix):
-                            # Robust handling for NCBI RS-injected prefixes (e.g., ctg1_RS00046)
-                            digit_str = "".join(
-                                c for c in locus_tag[len(args.prefix) :] if c.isdigit()
-                            )
-                            if not digit_str:
-                                continue
-
-                            gene_num = int(digit_str)
-
-                            if effective_start <= gene_num <= effective_end:
-                                start_pos = int(feature.location.start)
-                                end_pos = int(feature.location.end)
-                                strand = int(feature.location.strand)
-
-                                out_handle.write(
-                                    f"{locus_tag}\t{start_pos}\t{end_pos}\t{strand}\t{product}\n"
-                                )
-
-                                extracted_count += 1
-                                extracted_nums.append(gene_num)
-
-        except FileNotFoundError:
-            sys.exit(f"\n[!] File not found: {args.input}")
-        except ValueError as e:
-            sys.exit(f"\n[!] GenBank parsing error: {e}")
-
-    if args.output:
-        print(
-            f"[✓] Success! {extracted_count} coordinate features saved to {args.output.name}",
-            file=sys.stderr,
+    # Scale Ruler
+    ruler_y2 = TRACK_Y_FOREIGN - 0.7
+    ax.plot([-150, 0], [ruler_y2, ruler_y2], color=COLOR_RULER, lw=1, linestyle="--")
+    for tick in [-150, -100, -50, 0]:
+        ax.plot(
+            [tick, tick], [ruler_y2 - 0.05, ruler_y2 + 0.05], color=COLOR_RULER, lw=1
         )
-        if extracted_nums and (args.start is None or args.end is None):
-            actual_start = min(extracted_nums)
-            actual_end = max(extracted_nums)
-            print(
-                f"[*] Automatically detected bounds: {args.prefix}{actual_start} to {args.prefix}{actual_end}",
-                file=sys.stderr,
-            )
+        ax.text(tick - 5, ruler_y2 - 0.2, f"{tick} bp", fontsize=8, color="#666666")
+
+    # Set Field Boundaries
+    ax.set_xlim(-170, 50)
+    ax.set_ylim(-2.5, 3.5)
+
+    # ---------------------------------------------------------
+    # SAFE EXPORT
+    # ---------------------------------------------------------
+    pdf_out = "Figure3_PanelB_Promoters.pdf"
+    tiff_out = "Figure3_PanelB_Promoters.tiff"
+
+    try:
+        plt.savefig(pdf_out, bbox_inches="tight")
+        plt.savefig(tiff_out, format="tiff", dpi=300, bbox_inches="tight")
+        print(f"[✓] Panel B schematic successfully generated!")
+        print(f"    -> {pdf_out} (Vector)")
+        print(f"    -> {tiff_out} (300 DPI Raster)")
+    except OSError as e:
+        sys.exit(f"\n[!] Error saving schematic: {e}")
+    finally:
+        plt.close(fig)
 
 
 if __name__ == "__main__":

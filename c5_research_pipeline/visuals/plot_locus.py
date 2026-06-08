@@ -13,7 +13,7 @@ Example usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
 import argparse
@@ -68,8 +68,10 @@ def main() -> None:
                 parts = line.strip().split("\t")
                 locus_tag, start_str, end_str, strand_str, product = parts
 
-                # Robustly extract the gene number to assign colors
-                digit_str = "".join(filter(str.isdigit, locus_tag))
+                # Split by underscore to isolate the tail, then extract digits
+                # This prevents 'ctg1_46' from turning into '146'
+                tail = locus_tag.split("_")[-1]
+                digit_str = "".join(filter(str.isdigit, tail))
                 gene_num = int(digit_str) if digit_str else 0
 
                 assigned_color = COLOR_DEFAULT
@@ -83,7 +85,7 @@ def main() -> None:
                         "start": int(start_str),
                         "end": int(end_str),
                         "strand": int(strand_str),
-                        "label": f"{locus_tag.split('_')[-1]}",  # Shortened label for clean plotting
+                        "label": locus_tag,
                         "color": assigned_color,
                     }
                 )
