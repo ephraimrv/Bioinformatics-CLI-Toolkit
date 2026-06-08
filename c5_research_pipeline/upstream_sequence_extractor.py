@@ -15,7 +15,6 @@ Example Usage:
     $ python3 upstream_sequence_extractor.py -i GCF_000014445.1_genomic.gbff -t LEUM_RS10400 -u 150 -o upstream_LEUM.fasta
 """
 
-
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.1"
