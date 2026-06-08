@@ -50,17 +50,17 @@ pip install -r requirements.txt
 
 Most tools share a consistent `argparse` interface requiring an input directory or file (`-i`) and an output file (`-o`).
 
-**Example 1: Identifying conserved genes across multiple reference genomes**
+**Example 1: Identifying conserved genes across multiple reference genomes** \
 Aggregates CDS annotations across the provided reference directory and filters for genes present in at least three genomes. Outputs the results as a sorted TSV matrix and automatically generates a matching sequence-ready FASTA file.
 ```bash
 python3 c5_research_pipeline/conserved_annotation_scanner.py -i references/ --min_genomes 3 -o core_proteome.tsv -f
 ```
-**Example 2: Extracting a 150bp upstream regulatory region**
+**Example 2: Extracting a 150bp upstream regulatory region** \
 Extracts a specific coordinate block (150 base pairs) immediately upstream of the target gene's start codon to capture its regulatory footprint. The extracted promoter region is saved directly to a FASTA file.
 ```bash
 python3 c5_research_pipeline/upstream_sequence_extractor.py -i genome.gbff -t LEUM_RS10400 -u 150 -o upstream.fasta
 ```
-**Example 3: Extracting mature bacteriocin orthologs**
+**Example 3: Extracting mature bacteriocin orthologs** \
 Calculates mature core peptides from target pre-peptides and extracts full-length homologous sequences across reference genomes. Aggregates identical hits into deduplicated FASTA headers.
 ```bash
 python3 c5_research_pipeline/ortholog_extractor.py -t targets.faa -r references/ -o extracted_orthologs.faa
