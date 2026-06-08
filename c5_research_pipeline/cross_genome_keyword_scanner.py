@@ -29,7 +29,7 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import sys
 import argparse
@@ -177,7 +177,7 @@ def main() -> None:
         print("-" * 60, file=sys.stderr)
 
         output_lines = [
-            "Keyword\tGenome_File\tLocus\tLocus_Tag\tProduct\tProtein_Sequence"
+            "Keyword\tGenomes_Found\tGenome_File\tLocus\tLocus_Tag\tProduct\tProtein_Sequence",
         ]
         fasta_lines = []
         valid_results = {}
@@ -223,7 +223,7 @@ def main() -> None:
                 for genome_name, hits in genomes_with_kw.items():
                     for hit in hits:
                         output_lines.append(
-                            f"{kw}\t{genome_name}\t{hit['locus']}\t{hit['locus_tag']}\t{hit['product']}\t{hit['translation']}"
+                            f"{kw}\t{len(genomes_with_kw)}\t{genome_name}\t{hit['locus']}\t{hit['locus_tag']}\t{hit['product']}\t{hit['translation']}"
                         )
                         if args.fasta and hit["translation"] is not None:
                             header = f">{genome_name}|{hit['locus']}|{hit['locus_tag']}|{hit['product']}"
@@ -249,7 +249,7 @@ def main() -> None:
                 with open(args.output, "w", encoding="utf-8-sig") as f:
                     f.write("\n".join(output_lines) + "\n")
                 print(
-                    f"[*] Success! Matrix written to {args.output.name}",
+                    f"[*] Success! Matrix written to {args.output.resolve()}",
                     file=sys.stderr,
                 )
 
