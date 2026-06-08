@@ -11,6 +11,8 @@ License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 """
 
+__version__ = "1.0.5"
+
 import argparse
 import contextlib
 from pathlib import Path
