@@ -13,10 +13,9 @@ Example usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.1"
+__version__ = "1.0.3"
 
 import sys
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
@@ -44,6 +43,9 @@ def main():
     ax.get_yaxis().set_visible(False)
     ax.get_xaxis().set_visible(False)
 
+    # Add Panel Identifier (Top Left)
+    ax.text(-170, 3.0, "B", fontsize=16, weight="bold", fontfamily="sans-serif")
+
     # ---------------------------------------------------------
     # TRACK 1: Ancestral Lactobin Promoter
     # ---------------------------------------------------------
@@ -54,10 +56,20 @@ def main():
         lw=2,
     )
 
-    rect_atg1 = patches.Rectangle(
-        (0, TRACK_Y_ANCESTRAL - 0.15), 25, 0.3, color=COLOR_ATG_ANCESTRAL, alpha=0.9
+    # Directional Start Codon Box (Ancestral)
+    arrow_atg1 = patches.FancyArrow(
+        0,
+        TRACK_Y_ANCESTRAL,
+        20,
+        0,
+        width=0.3,
+        head_width=0.5,
+        head_length=5,
+        color=COLOR_ATG_ANCESTRAL,
+        alpha=0.9,
+        length_includes_head=True,
     )
-    ax.add_patch(rect_atg1)
+    ax.add_patch(arrow_atg1)
     ax.text(
         5, TRACK_Y_ANCESTRAL + 0.3, "ctg1_68\n(Lactobin A)", fontsize=10, weight="bold"
     )
@@ -96,12 +108,22 @@ def main():
         [-150, 0], [TRACK_Y_FOREIGN, TRACK_Y_FOREIGN], color=COLOR_DNA_BACKBONE, lw=2
     )
 
-    rect_atg2 = patches.Rectangle(
-        (0, TRACK_Y_FOREIGN - 0.15), 25, 0.3, color=COLOR_ATG_FOREIGN, alpha=0.9
+    # Directional Start Codon Box (Foreign)
+    arrow_atg2 = patches.FancyArrow(
+        0,
+        TRACK_Y_FOREIGN,
+        20,
+        0,
+        width=0.3,
+        head_width=0.5,
+        head_length=5,
+        color=COLOR_ATG_FOREIGN,
+        alpha=0.9,
+        length_includes_head=True,
     )
-    ax.add_patch(rect_atg2)
+    ax.add_patch(arrow_atg2)
     ax.text(
-        5, TRACK_Y_FOREIGN + 0.3, "ctg1_50\n(Blp Weapon)", fontsize=10, weight="bold"
+        5, TRACK_Y_FOREIGN + 0.3, "ctg1_50\n(Blp locus)", fontsize=10, weight="bold"
     )
     ax.text(3, TRACK_Y_FOREIGN - 0.35, "ATG", fontsize=8, family="monospace")
 
