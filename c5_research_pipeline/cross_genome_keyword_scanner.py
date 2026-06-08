@@ -4,8 +4,14 @@ Scans multiple GenBank reference genomes for specific annotation keywords.
 Filters and returns only the genes (and their protein sequences) that are
 conserved across a minimum number of different genomes. This is used to
 empirically verify the presence of specific protein families (e.g., 'lactobin',
-'cerein') across a comparative genomic dataset. It supports exporting results
-as both a tabular TSV matrix and a sequence-ready FASTA file.
+'cerein') across a comparative genomic dataset.
+
+Output matrices are strictly sorted to prioritize the most conserved targets:
+1. Number of genomes found (Ascending)
+2. Total physical copies found across all genomes (Ascending)
+3. Alphabetical by keyword/product name (Ascending)
+
+It supports exporting results as both a tabular TSV matrix and a sequence-ready FASTA file.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
 Date: 2026-06-07
@@ -18,9 +24,12 @@ Example Usage:
 
     # Auto-FASTA run: Search for multiple keywords, output TSV and matching FASTA
     $ python3 cross_genome_keyword_scanner.py -i references/ -k cerein lactobin -o conserved_hits.tsv -f
+
+    # Exact run: Search for keywords present in EXACTLY 3 genomes
+    $ python3 cross_genome_keyword_scanner.py -i references/ -k bacteriocin --min_genomes 3 --exact -o strict_three.tsv
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
 import argparse
@@ -193,14 +202,15 @@ def main() -> None:
         found_anything = len(valid_results) > 0
 
         if found_anything:
-            # Negative numbers sort descending, strings sort ascending
+            # All tiers sort ascending (lowest to highest, A-Z)
+            # Negative numbers sort descending (highest conservation first), strings sort ascending (A-Z)
             sorted_results = sorted(
                 valid_results.items(),
                 key=lambda item: (
-                    -len(item[1]),  # Tier 1: Genome count (Descending)
-                    -sum(
+                    len(item[1]),  # Tier 1: Genome count (Ascending)
+                    sum(
                         len(hits) for hits in item[1].values()
-                    ),  # Tier 2: Total hit count (Descending)
+                    ),  # Tier 2: Total hit count (Ascending)
                     item[0].lower(),  # Tier 3: Alphabetical keyword (Ascending)
                 ),
             )

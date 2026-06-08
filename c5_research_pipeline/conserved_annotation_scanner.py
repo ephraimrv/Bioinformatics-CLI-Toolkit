@@ -4,8 +4,14 @@ Extracts and groups CDS product annotations across GenBank genomes to identify c
 This tool acts as a text-based core proteome profiler. It aggregates all 'product'
 qualifiers, normalizes them, and reports only the gene products that meet a
 specified genome frequency threshold. It automatically filters out uninformative
-'hypothetical protein' annotations by default and can output both TSV matrices
-and matching FASTA sequence files.
+'hypothetical protein' annotations by default.
+
+Output matrices are strictly sorted to prioritize the most conserved targets:
+1. Number of genomes found (Ascending)
+2. Total physical copies found across all genomes (Ascending)
+3. Alphabetical by product name (Ascending)
+
+It can output both TSV matrices and matching FASTA sequence files.
 
 Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
 Date: 2026-06-07
@@ -18,9 +24,12 @@ Example Usage:
 
     # Auto-FASTA run: Will output both 'core.tsv' and 'core.fasta' automatically
     $ python3 conserved_annotation_scanner.py -i references/ --min_genomes 2 -o core.tsv -f
+
+    # Exact run: Find genes present in EXACTLY 2 genomes
+    $ python3 conserved_annotation_scanner.py -i references/ --min_genomes 2 --exact -o strict_two.tsv
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
 import argparse
@@ -167,10 +176,10 @@ def main() -> None:
         sorted_results = sorted(
             master_results.items(),
             key=lambda item: (
-                -len(item[1]),  # Tier 1: Genome count (Descending)
-                -sum(
+                len(item[1]),  # Tier 1: Genome count (Ascending)
+                sum(
                     len(hits) for hits in item[1].values()
-                ),  # Tier 2: Hit count (Descending)
+                ),  # Tier 2: Hit count (Ascending)
                 item[0],  # Tier 3: Alphabetical (Ascending)
             ),
         )
