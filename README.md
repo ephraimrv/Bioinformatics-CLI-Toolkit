@@ -49,18 +49,19 @@ pip install -r requirements.txt
 ### Usage Examples
 Most tools share a consistent argparse interface requiring an input directory or file (-i) and an output file (-o).
 
-Example 1: Identifying conserved genes across multiple reference genomes
+**Example 1: Identifying conserved genes across multiple reference genomes**
 ```
 python3 c5_research_pipeline/conserved_annotation_scanner.py -i references/ --min_genomes 3 -o core_proteome.tsv -f
 ```
 
-Example 2: Extracting a 150bp upstream regulatory region
+**Example 2: Extracting a 150bp upstream regulatory region**
 ```
 python3 c5_research_pipeline/upstream_sequence_extractor.py -i genome.gbff -t LEUM_RS10400 -u 150 -o upstream.fasta
 ```
-Example 3: Calculating whole-genome GC content
-```
-python3 core_utilities/gc_genome.py -i assembly.fasta -o gc_results.tsv
+**Example 3: Extracting mature bacteriocin orthologs**
+Calculates mature core peptides from target pre-peptides and extracts full-length homologous sequences across reference genomes. Aggregates identical hits into deduplicated FASTA headers.
+```bash
+python3 c5_research_pipeline/ortholog_extractor.py -t targets.faa -r references/ -o extracted_orthologs.faa
 ```
 ### Citation
 If you use this toolkit in your research, please cite the repository using the provided CITATION.cff metadata or the associated Zenodo DOI.
