@@ -7,17 +7,17 @@ from a GenBank file using its locus tag.
 This tool is used to empirically verify structural conservation in the
 regulatory regions flanking orthologous genes across different genomes.
 
+Author: Jan Ephraim R. Vallente (ephrvallente@gmail.com)
+Date: 2026-06-04
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
 Example Usage:
     # Extract 150bp upstream of LEUM_RS10400
-    $ python3 upstream_sequence_extractor.py -i GCF_000014445.1_genomic.gbff -t LEUM_RS10400 -u 150 -o upstream_LEUM.fasta
+    $ python3 upstream_sequence_extractor.py -i GCF_000014445.1_genomic.gbff -l LEUM_RS10400 -u 150 -o upstream_LEUM.fasta
 """
 
-__author__ = "Jan Ephraim R. Vallente"
-__email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
 import argparse
@@ -37,8 +37,8 @@ def get_args() -> argparse.Namespace:
         help="Path to the GenBank file (.gbk or .gbff).",
     )
     parser.add_argument(
-        "-t",
-        "--target",
+        "-l",
+        "--locus",
         type=str,
         required=True,
         help="The exact locus tag of the gene (e.g., LEUM_RS10400).",
