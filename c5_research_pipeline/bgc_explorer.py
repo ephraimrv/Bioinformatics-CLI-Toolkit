@@ -15,10 +15,10 @@ Example Usage:
     $ python3 bgc_explorer.py -i C5_prokka_result.gbk -o C5_manifest.tsv
 """
 
-
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
 __version__ = "1.0.1"
+
 import sys
 import re
 from pathlib import Path
