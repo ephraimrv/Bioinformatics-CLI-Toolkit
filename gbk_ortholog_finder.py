@@ -192,6 +192,18 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--output-fasta",
+        type=Path,
+        default=None,
+        help=(
+            "Save all ortholog protein sequences to a FASTA file (.faa format). "
+            "Useful for downstream analysis: multiple sequence alignment (MAFFT), "
+            "phylogenetics (IQ-TREE), motif detection (HMMER), etc. "
+            "If omitted, no FASTA file is generated. "
+            "Example: --output-fasta orthologs.faa"
+        ),
+    )
+    parser.add_argument(
         "--identity",
         type=float,
         default=0.30,
@@ -715,8 +727,8 @@ def print_hits_table(hits: list[OrthoHit]) -> None:
             else hit.query_product
         )
         rp = (
-            (hit.ref_product[:22] + "...")
-            if len(hit.ref_product) > 25
+            (hit.ref_product[:20] + "...")
+            if len(hit.ref_product) > 23
             else hit.ref_product
         )
         print(
@@ -777,6 +789,65 @@ def write_tsv(hits: list[OrthoHit], out_handle) -> None:
                 hit.ref_length,
             ]
         )
+
+
+def write_fasta(hits: list[OrthoHit], fasta_path: Path) -> None:
+    """Writes all ortholog protein sequences to a FASTA file.
+
+    Sequences are written in order: query first, then all references grouped
+    by reference file. Each FASTA header includes locus tag, organism/file,
+    product name, and identity percentage for easy identification.
+
+    This output is suitable for downstream analysis:
+        - Multiple sequence alignment (MAFFT, Clustal Omega)
+        - Phylogenetic inference (IQ-TREE, RAxML)
+        - Motif/domain detection (HMMER, InterProScan)
+        - Sequence logos (WebLogo, ggseqlogo)
+
+    Args:
+        hits:       ``OrthoHit`` results to write.
+        fasta_path: Path to the output FASTA file.
+    """
+    if not hits:
+        print(f"[!] No hits to write to FASTA.", file=sys.stderr)
+        return
+
+    with open(fasta_path, "w") as fh:
+        # Track which sequences we've written to avoid duplicates
+        written = set()
+
+        # Write query sequence(s) first
+        # Group hits by query locus to handle cases where one query matched multiple refs
+        query_hits = {}
+        for hit in hits:
+            if hit.query_locus not in query_hits:
+                query_hits[hit.query_locus] = hit
+
+        for locus, hit in sorted(query_hits.items()):
+            header = (
+                f">{hit.query_locus} | {hit.query_product} | "
+                f"Query | {hit.query_length}aa"
+            )
+            fh.write(f"{header}\n")
+            fh.write(f"{hit.query_seq}\n")
+            written.add((hit.query_locus, "query"))
+
+        # Write reference sequences grouped by reference file
+        # Sort by ref_file, then by ref_locus for consistent output
+        sorted_hits = sorted(hits, key=lambda h: (h.ref_file, h.ref_locus, -h.identity))
+
+        for hit in sorted_hits:
+            seq_id = (hit.ref_locus, hit.ref_file)
+            if seq_id in written:
+                continue  # Skip if we've already written this ref sequence
+
+            header = (
+                f">{hit.ref_locus} | {hit.ref_product} | "
+                f"{hit.ref_file} | {hit.identity*100:.2f}% identity | {hit.ref_length}aa"
+            )
+            fh.write(f"{header}\n")
+            fh.write(f"{hit.ref_seq}\n")
+            written.add(seq_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -854,6 +925,17 @@ def main() -> None:
             )
             print()
             print_hits_table(all_hits)
+
+        if args.output_fasta:
+            print(
+                f"[*] Saving FASTA \u2192 {args.output_fasta.resolve()}",
+                file=sys.stderr,
+            )
+            write_fasta(all_hits, args.output_fasta)
+            print(
+                f"      (For downstream: MAFFT, IQ-TREE, HMMER, InterProScan, etc.)",
+                file=sys.stderr,
+            )
 
         print("=" * 100, file=sys.stderr)
         print("[*] Done.", file=sys.stderr)
