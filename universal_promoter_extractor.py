@@ -20,7 +20,7 @@ Example usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 import sys
 import argparse
@@ -74,19 +74,25 @@ def get_args() -> argparse.Namespace:
 
 def extract_regulatory_regions(
     gbk_path: Path, keywords: list[str], upstream_bp: int
-) -> Iterator[tuple[str, str, str, str]]:
+) -> Iterator[tuple[str, str, str, str, int]]:
     """
     Scans a GenBank file for specific keywords in CDS annotations and extracts
     the upstream DNA sequences (promoter regions) for MEME motif discovery.
 
+    Tracks actual extracted length separately from the requested window —
+    these differ when a gene is near a contig boundary. A warning is printed
+    to stderr when truncation occurs so the user can exclude or flag those
+    sequences before running MEME.
+
     Args:
-        gbk_path: Path object pointing to the target .gbk or .gbff file.
-        keywords: A list of string keywords to match against the /product annotation.
-        upstream_bp: The exact number of base pairs to extract upstream of the start codon.
+        gbk_path:    Path object pointing to the target .gbk or .gbff file.
+        keywords:    A list of string keywords to match against /product annotation.
+        upstream_bp: The number of base pairs to extract upstream of the start codon.
 
     Yields:
-        A 4-item tuple containing:
-        (Sequence ID, Locus Tag, Raw Product Annotation, Upstream DNA Sequence)
+        A 5-item tuple:
+        (Sequence ID, Locus Tag, Product Annotation, Upstream DNA Sequence,
+         Actual Extracted Length)
 
     Raises:
         ValueError: If the GenBank file is malformed, structurally invalid, or unreadable.
@@ -109,13 +115,23 @@ def extract_regulatory_regions(
 
                             if strand == 1:
                                 slice_start = max(0, start - upstream_bp)
+                                actual_upstream = start - slice_start
                                 upstream_seq = str(record.seq[slice_start:start])
                             else:
                                 slice_end = min(len(record.seq), end + upstream_bp)
+                                actual_upstream = slice_end - end
                                 raw_seq = record.seq[end:slice_end]
                                 upstream_seq = str(raw_seq.reverse_complement())
 
-                            yield record.id, locus_tag, product, upstream_seq
+                            # Warn if the upstream window was truncated by a contig boundary
+                            if actual_upstream < upstream_bp:
+                                print(
+                                    f"      [!] Warning: {locus_tag} upstream truncated to "
+                                    f"{actual_upstream}bp (contig boundary — requested {upstream_bp}bp).",
+                                    file=sys.stderr,
+                                )
+
+                            yield record.id, locus_tag, product, upstream_seq, actual_upstream
 
     except Exception as e:
         raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
@@ -151,7 +167,7 @@ def main() -> None:
 
                 print(f"  -> Parsing {file_path.name}...", file=sys.stderr)
 
-                for seq_id, locus, prod, seq in extract_regulatory_regions(
+                for seq_id, locus, prod, seq, actual_up in extract_regulatory_regions(
                     file_path, args.keywords, args.upstream
                 ):
                     # File-aware Deduplication Engine
@@ -166,7 +182,9 @@ def main() -> None:
                     # replace all non-word/non-hyphen characters with underscores
                     clean_prod = re.sub(r"[^\w\-]", "_", prod)
 
-                    fasta_header = f">{seq_id}_{locus}_{clean_prod}_up{args.upstream}"
+                    # Header uses actual extracted length — may differ from requested
+                    # upstream if gene is near a contig boundary
+                    fasta_header = f">{seq_id}_{locus}_{clean_prod}_up{actual_up}"
 
                     out_file.write(f"{fasta_header}\n{seq}\n")
                     print(f"      [Hit] {locus} | {prod[:40]}...", file=sys.stderr)

@@ -1,29 +1,36 @@
 """
-GenBank Promoter Region Extractor
+Proteome Hunter — Interactive Protein Presence/Absence Scanner
 
-Scans GenBank assemblies for genes matching keywords and extracts upstream promoter sequences.
+An interactive REPL tool for scanning reference genomes for the presence
+or absence of a protein of interest.
 
-This tool performs keyword-based gene identification within GenBank assemblies. It
-extracts a specified upstream base pair range for identified genes, performs
-deduplication to ensure statistical validity for downstream motif analysis,
-and exports the result to a FASTA file.
+Paste a full protein sequence and press Enter. The tool automatically
+calculates the mature peptide core (stripping signal peptides via
+biochemical cleavage logic), then performs an exact substring search
+across all reference genomes. Results are reported as a PRESENT/ABSENT
+matrix per genome, with locus tag and product for each hit.
 
+Useful for rapid cross-genome exploration during early-stage research,
+before committing to a full alignment-based search with gbk_ortholog_finder.py.
 
-
-Example Usage:
-    $ python3 universal_promoter_extractor.py -i C5_prokka.gbk \
-      -o C5_promoters.fasta -u 150 -k bacteriocin lactobin cerein
-
-    $ python3 universal_promoter_extractor.py -i references/ \
-      -o C5_promoters.fasta -u 150 -k bacteriocin lactobin cerein
+Note:
+    This tool uses exact substring matching. For homolog detection at
+    lower identity, use gbk_ortholog_finder.py instead.
 
 License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Example Usage:
+    # Interactive scan against a directory of reference genomes
+    $ python3 proteome_hunter.py -i references/ -o presence_matrix.tsv
+
+    # Interactive scan against a single genome
+    $ python3 proteome_hunter.py -i genome.gbff
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 import argparse
 from pathlib import Path
@@ -92,13 +99,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print("=========================================")
-    print(f"  Target Scope: {args.input.name}")
+    print("=========================================", file=sys.stderr)
+    print(f"  Target Scope: {args.input.name}", file=sys.stderr)
     if args.output:
-        print(f"  Output File:  {args.output.resolve()}")
-    print("=========================================")
-    print("Paste a full protein sequence and press Enter.")
-    print("Type 'quit' or press Ctrl+C to exit.\n")
+        print(f"  Output File:  {args.output.resolve()}", file=sys.stderr)
+    print("=========================================", file=sys.stderr)
+    print("Paste a full protein sequence and press Enter.", file=sys.stderr)
+    print("Type 'quit' or press Ctrl+C to exit.\n", file=sys.stderr)
 
     while True:
         try:
@@ -109,11 +116,26 @@ def main() -> None:
             if not user_input:
                 continue
 
-            print("\n  [*] Calculating structural core...")
+            print("\n  [*] Calculating structural core...", file=sys.stderr)
             core_target = calculate_mature_core(user_input.upper())
 
-            print(f"  [+] Core Extracted : {core_target}")
-            print(f"  [i] Core Length    : {len(core_target)} amino acids\n")
+            # Guard: if calculate_mature_core returns an empty string
+            # (signal peptide longer than the whole protein), an empty string
+            # matches EVERY sequence — resulting in false positives across all genomes.
+            if not core_target:
+                print(
+                    "  [!] Error: Mature core calculation returned an empty sequence.\n"
+                    "      This can happen if the signal peptide spans the entire protein.\n"
+                    "      Try a longer sequence or check the input.",
+                    file=sys.stderr,
+                )
+                continue
+
+            print(f"  [+] Core Extracted : {core_target}", file=sys.stderr)
+            print(
+                f"  [i] Core Length    : {len(core_target)} amino acids\n",
+                file=sys.stderr,
+            )
 
             total_input_hits = 0
 
@@ -126,7 +148,8 @@ def main() -> None:
 
                         if hits:
                             print(
-                                f"      [!] ALERT: Found {len(hits)} match(es) in {file_path.name}"
+                                f"      [!] ALERT: Found {len(hits)} match(es) in {file_path.name}",
+                                file=sys.stderr,
                             )
                             total_input_hits += len(hits)
                             for locus, product in hits:
@@ -136,13 +159,16 @@ def main() -> None:
                                     else product
                                 )
                                 print(
-                                    f"          -> Locus: {locus:<15} | Product: {short_prod}"
+                                    f"          -> Locus: {locus:<15} | Product: {short_prod}",
+                                    file=sys.stderr,
                                 )
                                 tsv.write(
                                     f"{file_path.name}\t{locus}\t{product}\tPRESENT\n"
                                 )
                         else:
-                            print(f"      [✓] ABSENT in {file_path.name}")
+                            print(
+                                f"      [✓] ABSENT in {file_path.name}", file=sys.stderr
+                            )
                             tsv.write(f"{file_path.name}\t-\t-\tABSENT\n")
             else:
                 for file_path in stream_reference_files(args.input):
@@ -151,7 +177,8 @@ def main() -> None:
 
                     if hits:
                         print(
-                            f"      [!] ALERT: Found {len(hits)} match(es) in {file_path.name}"
+                            f"      [!] ALERT: Found {len(hits)} match(es) in {file_path.name}",
+                            file=sys.stderr,
                         )
                         total_input_hits += len(hits)
                         for locus, product in hits:
@@ -159,15 +186,18 @@ def main() -> None:
                                 product[:45] + "..." if len(product) > 45 else product
                             )
                             print(
-                                f"          -> Locus: {locus:<15} | Product: {short_prod}"
+                                f"          -> Locus: {locus:<15} | Product: {short_prod}",
+                                file=sys.stderr,
                             )
                     else:
-                        print(f"      [✓] ABSENT in {file_path.name}")
+                        print(f"      [✓] ABSENT in {file_path.name}", file=sys.stderr)
             if args.output:
                 print(
-                    f"\n  [=] BATCH SUMMARY: {total_input_hits} matches found. Matrix saved to {args.output.name}.\n"
+                    f"\n  [=] BATCH SUMMARY: {total_input_hits} matches found. "
+                    f"Matrix saved to {args.output.name}.\n",
+                    file=sys.stderr,
                 )
-            print("-" * 60)
+            print("-" * 60, file=sys.stderr)
 
         except KeyboardInterrupt:
             print("\nForce quitting tool. Goodbye!")
