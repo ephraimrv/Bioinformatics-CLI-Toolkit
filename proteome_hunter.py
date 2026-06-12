@@ -32,6 +32,7 @@ __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
 __version__ = "1.1.0"
 
+import sys
 import argparse
 from pathlib import Path
 
