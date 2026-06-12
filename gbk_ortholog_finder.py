@@ -101,6 +101,15 @@ except ImportError:
         "       Install it with: pip install biopython"
     )
 
+# Optional: tqdm for progress bars. Works without it, but less elegant.
+try:
+    from tqdm import tqdm
+
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    tqdm = lambda x, **kwargs: x  # Fallback: just iterate normally
+
 from utils import stream_reference_files, calculate_mature_core, smart_open
 
 # ── Module-level aligner and matrix (created ONCE, reused for all comparisons) ─
@@ -304,6 +313,17 @@ def get_args() -> argparse.Namespace:
         default=10,
         help="Skip query proteins shorter than this many amino acids. Default: 10.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Increase output verbosity. By default, only major milestones and "
+            "a progress bar are shown. With --verbose, every file scanned and "
+            "every protein extracted is printed. Useful for debugging."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -318,6 +338,7 @@ def extract_proteins_from_gbk(
     apply_mature: bool = False,
     min_length: int = 10,
     max_length: int | None = None,
+    verbose: bool = False,
 ) -> list[Protein]:
     """Reads a GBK/GBFF file and returns all filtered CDS protein sequences.
 
@@ -326,6 +347,7 @@ def extract_proteins_from_gbk(
         apply_mature: If ``True``, applies ``calculate_mature_core()`` to each protein.
         min_length:   Skip proteins shorter than this.
         max_length:   Skip proteins longer than this (``None`` = no limit).
+        verbose:      If ``True``, print details for each protein extracted.
 
     Returns:
         List of ``Protein`` objects.
@@ -358,10 +380,11 @@ def extract_proteins_from_gbk(
 
             # Skip proteins whose mature core is zero-length
             if apply_mature and (not mature_seq or len(mature_seq) == 0):
-                print(
-                    f"   [!] Skipping {locus_tag}: mature core is zero-length.",
-                    file=sys.stderr,
-                )
+                if verbose:
+                    print(
+                        f"   [!] Skipping {locus_tag}: mature core is zero-length.",
+                        file=sys.stderr,
+                    )
                 skipped_zero_length += 1
                 continue
 
@@ -376,17 +399,19 @@ def extract_proteins_from_gbk(
                 )
             )
 
-            if apply_mature and mature_seq != translation:
-                print(
-                    f"   {locus_tag} ({full_length:>3} aa)"
-                    f" \u2192 mature: {len(mature_seq):>3} aa | {product[:55]}",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"   {locus_tag} ({full_length:>3} aa) | {product[:60]}",
-                    file=sys.stderr,
-                )
+            # Only print protein details if verbose
+            if verbose:
+                if apply_mature and mature_seq != translation:
+                    print(
+                        f"   {locus_tag} ({full_length:>3} aa)"
+                        f" \u2192 mature: {len(mature_seq):>3} aa | {product[:55]}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"   {locus_tag} ({full_length:>3} aa) | {product[:60]}",
+                        file=sys.stderr,
+                    )
 
     if skipped_zero_length > 0:
         print(
@@ -942,6 +967,7 @@ def main() -> None:
             apply_mature=args.mature,
             min_length=args.min_length,
             max_length=args.max_length,
+            verbose=args.verbose,
         )
         if not query_proteins:
             sys.exit("[!] No proteins extracted from query. Check the file.")
@@ -951,11 +977,19 @@ def main() -> None:
             sys.exit("[!] No valid reference files found.")
 
         all_hits: list[OrthoHit] = []
-        for i, ref_file in enumerate(ref_files, 1):
-            print(
-                f"[*] [{i}/{len(ref_files)}] Scanning {ref_file.name} ...",
-                file=sys.stderr,
-            )
+
+        # Use progress bar if tqdm is available, otherwise just iterate
+        ref_iter = tqdm(
+            ref_files, desc="Scanning references", disable=not HAS_TQDM or args.verbose
+        )
+
+        for ref_file in ref_iter:
+            # Only print file name if verbose (tqdm shows progress in default mode)
+            if args.verbose:
+                print(
+                    f"[*] Scanning {ref_file.name} ...",
+                    file=sys.stderr,
+                )
             file_hits = find_orthologs(
                 query_proteins=query_proteins,
                 ref_path=ref_file,
@@ -964,12 +998,14 @@ def main() -> None:
                 min_coverage=args.min_coverage,
                 coverage_mode=args.coverage_mode,
             )
-            print(
-                f"      \u2192 {len(file_hits)} hit(s) above "
-                f"{args.identity*100:.0f}% identity / "
-                f"{args.min_coverage*100:.0f}% coverage ({args.coverage_mode})",
-                file=sys.stderr,
-            )
+            # Only print results summary if verbose
+            if args.verbose:
+                print(
+                    f"      \u2192 {len(file_hits)} hit(s) above "
+                    f"{args.identity*100:.0f}% identity / "
+                    f"{args.min_coverage*100:.0f}% coverage ({args.coverage_mode})",
+                    file=sys.stderr,
+                )
             all_hits.extend(file_hits)
 
         print(f"\n[*] Total hits: {len(all_hits)}\n", file=sys.stderr)
@@ -982,12 +1018,36 @@ def main() -> None:
             with smart_open(args.output) as out_handle:
                 write_tsv(all_hits, out_handle)
         else:
-            print(
-                "[*] Tip: add -o results.tsv to save results with protein sequences.",
-                file=sys.stderr,
-            )
-            print()
-            print_hits_table(all_hits)
+            # Smart output: if there are many hits, print a preview instead of all
+            if len(all_hits) > 50:
+                print(
+                    f"[!] Found {len(all_hits)} hits — too many to print to terminal.",
+                    file=sys.stderr,
+                )
+                print(
+                    "[*] Use: -o results.tsv to save results to a file (recommended).",
+                    file=sys.stderr,
+                )
+                print(
+                    f"[*] Or use: --output-fasta results.faa for protein sequences.",
+                    file=sys.stderr,
+                )
+                print(
+                    f"\n[*] Showing first 20 hits as preview:\n",
+                    file=sys.stderr,
+                )
+                print_hits_table(all_hits[:20])
+                print(
+                    f"\n... ({len(all_hits) - 20} more hits omitted) ...\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[*] Tip: add -o results.tsv to save results with protein sequences.",
+                    file=sys.stderr,
+                )
+                print()
+                print_hits_table(all_hits)
 
         if args.output_fasta:
             print(
