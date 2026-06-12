@@ -91,6 +91,8 @@ import argparse
 import csv
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime
+import time
 
 try:
     from Bio import SeqIO
@@ -802,10 +804,10 @@ def print_hits_table(hits: list[OrthoHit]) -> None:
         print("No hits found above the identity and coverage thresholds.")
         return
 
-    cQL, cQP = 12, 20
-    cRL, cRP = 15, 25
+    cQL, cQP = 15, 23
+    cRL, cRP = 14, 25
     cRF = 23
-    cID, cAL, cQL2, cRL2 = 10, 10, 10, 10
+    cID, cAL, cQL2, cRL2 = 10, 7, 9, 7
 
     header = (
         f"{'Query Locus':<{cQL}} | {'Query Product':<{cQP}} | "
@@ -824,14 +826,14 @@ def print_hits_table(hits: list[OrthoHit]) -> None:
             else hit.query_product
         )
         rp = (
-            (hit.ref_product[:20] + "...")
-            if len(hit.ref_product) > 23
+            (hit.ref_product[:22] + "...")
+            if len(hit.ref_product) > 25
             else hit.ref_product
         )
         print(
             f"{hit.query_locus:<{cQL}} | {qp:<{cQP}} | "
             f"{hit.ref_locus:<{cRL}} | {rp:<{cRP}} | "
-            f"{hit.ref_file:<{cRF}} | {hit.identity*100:>{cID-1}.1f}% | "
+            f"{hit.ref_file:<{cRF}} | {hit.identity*100:>{cID-1}.2f}% | "
             f"{hit.alignment_length:>{cAL}} | {hit.query_length:>{cQL2}} | "
             f"{hit.ref_length:>{cRL2}}"
         )
@@ -880,7 +882,7 @@ def write_tsv(hits: list[OrthoHit], out_handle) -> None:
                 hit.query_seq,
                 hit.ref_seq,
                 hit.mismatches,
-                f"{hit.identity * 100:.1f}",
+                f"{hit.identity * 100:.2f}",
                 hit.alignment_length,
                 hit.query_length,
                 hit.ref_length,
@@ -940,7 +942,7 @@ def write_fasta(hits: list[OrthoHit], fasta_path: Path) -> None:
 
             header = (
                 f">{hit.ref_locus} | {hit.ref_product} | "
-                f"{hit.ref_file} | {hit.identity*100:.1f}% identity | {hit.ref_length}aa"
+                f"{hit.ref_file} | {hit.identity*100:.2f}% identity | {hit.ref_length}aa"
             )
             fh.write(f"{header}\n")
             fh.write(f"{hit.ref_seq}\n")
@@ -948,12 +950,195 @@ def write_fasta(hits: list[OrthoHit], fasta_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 9: MAIN PIPELINE
+# STEP 10: LOG FILE GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def write_log_file(
+    args: argparse.Namespace,
+    query_proteins: list[Protein],
+    ref_files: list[Path],
+    all_hits: list[OrthoHit],
+    runtime_seconds: float,
+    output_prefix: str,
+) -> None:
+    """Writes a comprehensive log/parameters file documenting the ortholog search.
+
+    This file mirrors the format used by BLAST, samtools, and other standard
+    bioinformatics tools. It captures:
+      - Command line used
+      - All parameters and thresholds
+      - Input file information
+      - Summary statistics
+      - Runtime and completion time
+      - Output file locations
+
+    The log file is saved alongside the main TSV output with a .log extension.
+
+    Args:
+        args:           Parsed command-line arguments.
+        query_proteins: List of query proteins extracted from the input.
+        ref_files:      List of reference GenBank file paths processed.
+        all_hits:       List of ortholog hits found.
+        runtime_seconds: Elapsed time for the entire search (float).
+        output_prefix:  Base name for output files (used to name the .log file).
+    """
+    # Construct log file path: same directory as TSV output, with .log extension
+    if args.output:
+        log_path = args.output.with_suffix(".log")
+    else:
+        log_path = Path(output_prefix).with_suffix(".log")
+
+    # Reconstruct the command line for documentation
+    import shlex
+
+    cmd_parts = [
+        "python3 gbk_ortholog_finder.py",
+        f"-q {shlex.quote(str(args.query))}",
+        f"-r {shlex.quote(str(args.reference))}",
+        f"--identity {args.identity}",
+        f"--min-coverage {args.min_coverage}",
+        f"--coverage-mode {args.coverage_mode}",
+    ]
+    if args.mature:
+        cmd_parts.append("--mature")
+    if args.max_length:
+        cmd_parts.append(f"--max-length {args.max_length}")
+    if args.min_length != 10:
+        cmd_parts.append(f"--min-length {args.min_length}")
+    if args.output:
+        cmd_parts.append(f"-o {shlex.quote(str(args.output))}")
+    if args.output_fasta:
+        cmd_parts.append(f"--output-fasta {shlex.quote(str(args.output_fasta))}")
+    if args.verbose:
+        cmd_parts.append("--verbose")
+
+    command_line = " \\\n    ".join(cmd_parts)
+
+    # Completion timestamp
+    completion_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # Gather reference file summaries
+    ref_file_summaries = []
+    for ref_file in ref_files:
+        ref_file_summaries.append(f"  - {ref_file.name}")
+
+    # Count hits per query
+    hits_by_query = {}
+    for hit in all_hits:
+        if hit.query_locus not in hits_by_query:
+            hits_by_query[hit.query_locus] = 0
+        hits_by_query[hit.query_locus] += 1
+
+    # Write the log file
+    with open(log_path, "w", encoding="utf-8") as log:
+        # Header
+        log.write("=" * 100 + "\n")
+        log.write(f"Ortholog Search Results: {output_prefix}\n".center(100))
+        log.write("=" * 100 + "\n\n")
+
+        # Command line
+        log.write("Command Line:\n")
+        log.write(f"  {command_line}\n\n")
+
+        # Parameters
+        log.write("Parameters:\n")
+        log.write(f"  Minimum Identity     : {args.identity * 100:.2f}%\n")
+        log.write(f"  Minimum Coverage     : {args.min_coverage * 100:.2f}%\n")
+        log.write(f"  Coverage Mode        : {args.coverage_mode}\n")
+        log.write(
+            f"  Mature Core Only     : {'YES (signal peptides trimmed)' if args.mature else 'NO'}\n"
+        )
+        log.write(f"  Min Query Length     : {args.min_length} aa\n")
+        if args.max_length:
+            log.write(f"  Max Query Length     : {args.max_length} aa\n")
+        log.write("\n")
+
+        # Query information
+        log.write("Query Input:\n")
+        log.write(f"  Query File           : {args.query.name}\n")
+        log.write(f"  Proteins Extracted   : {len(query_proteins)}\n")
+        if query_proteins:
+            lengths = [p.length for p in query_proteins]
+            log.write(f"  Query Length Range   : {min(lengths)}–{max(lengths)} aa\n")
+        log.write("\n")
+
+        # Reference information
+        log.write("Reference Input:\n")
+        log.write(f"  Reference Files      : {len(ref_files)} file(s)\n")
+        for summary in ref_file_summaries:
+            log.write(f"{summary}\n")
+        log.write("\n")
+
+        # Results summary
+        log.write("Results Summary:\n")
+        log.write(f"  Total Hits Found     : {len(all_hits)}\n")
+        if hits_by_query:
+            log.write(f"  Queries with Hits    : {len(hits_by_query)}\n")
+            if query_proteins:
+                pct_with_hits = len(hits_by_query) / len(query_proteins) * 100
+                log.write(
+                    f"  Coverage of Queries  : {pct_with_hits:.2f}% have at least one hit\n"
+                )
+        if all_hits:
+            identities = [h.identity for h in all_hits]
+            log.write(
+                f"  Identity Range       : {min(identities)*100:.2f}–{max(identities)*100:.2f}%\n"
+            )
+            coverages = [
+                (
+                    (
+                        h.alignment_length / max(h.query_length, h.ref_length)
+                        if "max" == args.coverage_mode
+                        else h.alignment_length / min(h.query_length, h.ref_length)
+                    )
+                )
+                for h in all_hits
+            ]
+            log.write(
+                f"  Coverage Range       : {min(coverages)*100:.2f}–{max(coverages)*100:.2f}%\n"
+            )
+        log.write("\n")
+
+        # Runtime information
+        log.write("Execution:\n")
+        log.write(f"  Runtime              : {runtime_seconds:.2f} seconds\n")
+        log.write(f"  Completion Time      : {completion_time}\n")
+        log.write("\n")
+
+        # Output information
+        log.write("Output Files:\n")
+        if args.output:
+            log.write(f"  TSV Results          : {args.output.resolve()}\n")
+            log.write(
+                f"  TSV Columns          : query_locus, query_product, ref_locus,\n"
+            )
+            log.write(
+                f"                         ref_product, ref_file, query_sequence,\n"
+            )
+            log.write(
+                f"                         ref_sequence, mismatches, identity_pct,\n"
+            )
+            log.write(
+                f"                         alignment_length, query_length, ref_length\n"
+            )
+        if args.output_fasta:
+            log.write(f"  FASTA Sequences      : {args.output_fasta.resolve()}\n")
+            log.write(f"  FASTA Use Cases      : MAFFT, IQ-TREE, HMMER, InterProScan\n")
+        log.write(f"  Log File             : {log_path.resolve()}\n")
+        log.write("\n")
+
+        # Footer
+        log.write("=" * 100 + "\n")
+        log.write(f"GBK Ortholog Finder v{__version__}\n".center(100))
+        log.write("=" * 100 + "\n")
+
+    print(f"[*] Log saved to         : {log_path.resolve()}", file=sys.stderr)
 
 
 def main() -> None:
     """Parses arguments and runs the full ortholog-finding pipeline."""
+    start_time = time.time()
     args = get_args()
 
     print("=" * 100, file=sys.stderr)
@@ -1075,6 +1260,18 @@ def main() -> None:
                 f"      (For downstream: MAFFT, IQ-TREE, HMMER, InterProScan, etc.)",
                 file=sys.stderr,
             )
+
+        # Calculate runtime and write log file
+        runtime_seconds = time.time() - start_time
+        output_prefix = args.output.stem if args.output else args.query.stem
+        write_log_file(
+            args=args,
+            query_proteins=query_proteins,
+            ref_files=ref_files,
+            all_hits=all_hits,
+            runtime_seconds=runtime_seconds,
+            output_prefix=output_prefix,
+        )
 
         print("=" * 100, file=sys.stderr)
         print("[*] Done.", file=sys.stderr)
