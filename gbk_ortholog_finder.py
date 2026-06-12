@@ -595,7 +595,6 @@ def calculate_identity(seq_a: str, seq_b: str) -> tuple[float, int, int]:
 def _load_reference_proteins(
     ref_path: Path,
     use_mature: bool = False,
-    verbose: bool = False,
 ) -> list[_RefProtein]:
     """Loads all CDS proteins from a reference GenBank file.
 
@@ -613,7 +612,6 @@ def _load_reference_proteins(
         ref_path:   Path to the reference GBK/GBFF file.
         use_mature: If ``True``, applies ``calculate_mature_core()`` to each
                     protein so that ``cmp_seq`` is the trimmed mature core.
-        verbose:    (Unused; kept for API consistency.)
 
     Returns:
         List of ``_RefProtein`` objects with pre-computed comparison data.
@@ -674,8 +672,6 @@ def _load_reference_proteins(
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 6: COMPARE QUERY PROTEINS AGAINST A REFERENCE FILE
 # ─────────────────────────────────────────────────────────────────────────────
-
-
 def find_orthologs(
     query_proteins: list[Protein],
     ref_path: Path,
@@ -683,7 +679,6 @@ def find_orthologs(
     use_mature: bool,
     min_coverage: float = 0.50,
     coverage_mode: str = "min",
-    verbose: bool = False,
 ) -> list[OrthoHit]:
     """Compares query proteins against all CDS in a reference file.
 
@@ -712,9 +707,7 @@ def find_orthologs(
     # Load reference proteins with cmp_seq and k-mers pre-computed.
     # calculate_mature_core() and _build_kmers() are called here ONCE per
     # reference protein — never again inside the nested query loop below.
-    ref_proteins = _load_reference_proteins(
-        ref_path, use_mature=use_mature, verbose=verbose
-    )
+    ref_proteins = _load_reference_proteins(ref_path, use_mature=use_mature)
     if not ref_proteins:
         return hits
 
@@ -908,10 +901,10 @@ def write_fasta(hits: list[OrthoHit], fasta_path: Path) -> None:
         fasta_path: Path to the output FASTA file.
     """
     if not hits:
-        print(f"[!] No hits to write to FASTA.", file=sys.stderr)
+        print("[!] No hits to write to FASTA.", file=sys.stderr)
         return
 
-    with open(fasta_path, "w") as fh:
+    with open(fasta_path, "w", encoding="utf-8") as fh:
         # Track which sequences we've written to avoid duplicates
         written = set()
 
@@ -922,7 +915,7 @@ def write_fasta(hits: list[OrthoHit], fasta_path: Path) -> None:
             if hit.query_locus not in query_hits:
                 query_hits[hit.query_locus] = hit
 
-        for locus, hit in sorted(query_hits.items()):
+        for hit in sorted(query_hits.values(), key=lambda hit: hit.query_locus):
             header = (
                 f">{hit.query_locus} | {hit.query_product} | "
                 f"Query | {hit.query_length}aa"
@@ -1109,22 +1102,22 @@ def write_log_file(
         # Output information
         log.write("Output Files:\n")
         if args.output:
-            log.write(f"  TSV Results          : {args.output.resolve()}\n")
+            log.write("  TSV Results          : {args.output.resolve()}\n")
             log.write(
-                f"  TSV Columns          : query_locus, query_product, ref_locus,\n"
+                "  TSV Columns          : query_locus, query_product, ref_locus,\n"
             )
             log.write(
-                f"                         ref_product, ref_file, query_sequence,\n"
+                "                         ref_product, ref_file, query_sequence,\n"
             )
             log.write(
-                f"                         ref_sequence, mismatches, identity_pct,\n"
+                "                         ref_sequence, mismatches, identity_pct,\n"
             )
             log.write(
-                f"                         alignment_length, query_length, ref_length\n"
+                "                         alignment_length, query_length, ref_length\n"
             )
         if args.output_fasta:
             log.write(f"  FASTA Sequences      : {args.output_fasta.resolve()}\n")
-            log.write(f"  FASTA Use Cases      : MAFFT, IQ-TREE, HMMER, InterProScan\n")
+            log.write("  FASTA Use Cases      : MAFFT, IQ-TREE, HMMER, InterProScan\n")
         log.write(f"  Log File             : {log_path.resolve()}\n")
         log.write("\n")
 
@@ -1197,7 +1190,6 @@ def main() -> None:
                 use_mature=args.mature,
                 min_coverage=args.min_coverage,
                 coverage_mode=args.coverage_mode,
-                verbose=args.verbose,
             )
             # Only print results summary if verbose
             if args.verbose:
@@ -1230,16 +1222,16 @@ def main() -> None:
                     file=sys.stderr,
                 )
                 print(
-                    f"[*] Or use: --output-fasta results.faa for protein sequences.",
+                    "[*] Or use: --output-fasta results.faa for protein sequences.",
                     file=sys.stderr,
                 )
                 print(
-                    f"\n[*] Showing first 20 hits as preview:\n",
+                    "\n[*] Showing first 20 hits as preview:\n",
                     file=sys.stderr,
                 )
                 print_hits_table(all_hits[:20])
                 print(
-                    f"\n... ({len(all_hits) - 20} more hits omitted) ...\n",
+                    "\n... ({len(all_hits) - 20} more hits omitted) ...\n",
                     file=sys.stderr,
                 )
             else:
@@ -1257,7 +1249,7 @@ def main() -> None:
             )
             write_fasta(all_hits, args.output_fasta)
             print(
-                f"      (For downstream: MAFFT, IQ-TREE, HMMER, InterProScan, etc.)",
+                "      (For downstream: MAFFT, IQ-TREE, HMMER, InterProScan, etc.)",
                 file=sys.stderr,
             )
 
