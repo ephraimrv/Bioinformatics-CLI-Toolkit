@@ -16,20 +16,13 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import re
 import sys
 import traceback
 from typing import Iterator
-
-try:
-    from Bio.Seq import Seq
-except ImportError:
-    sys.exit(
-        "ERROR: Biopython is required but not installed.\n"
-        "       Install it with: pip install biopython"
-    )
+from Bio.Seq import Seq
 from utils import base_parser, wrap_fasta, extract_upstream_sequence
 
 
@@ -71,7 +64,13 @@ def find_motif_regex_iterator(
     # Reverse complement (template) strand scan
     rc_seq = str(Seq(sequence).reverse_complement())
     for match in safe_pattern.finditer(rc_seq):
-        fwd_pos = len(sequence) - match.end()
+        # IMPORTANT: Because we use a zero-width lookahead assertion (?=(...)),
+        # match.end() always equals match.start() — the outer match consumes
+        # zero characters. Using match.end() directly would place every RC hit
+        # at the wrong position (off by the motif length). We must calculate
+        # the true end from the captured group's length instead.
+        true_match_end = match.start() + len(match.group(1))
+        fwd_pos = len(sequence) - true_match_end
         rel_pos = -(actual_len - fwd_pos)
         yield rel_pos, match.group(1), "-"
 

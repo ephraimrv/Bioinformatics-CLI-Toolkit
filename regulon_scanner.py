@@ -32,7 +32,7 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import re
 import sys
@@ -124,11 +124,18 @@ def stream_regulon_hits(
                     # Reverse complement (template) strand scan
                     # The RC of the upstream sequence is scanned with the same pattern.
                     # The coordinate is mapped back to the forward-strand TSS origin:
-                    #   forward position of motif 5' end = len(upstream_seq) - match.end()
+                    #   forward position of motif 5' end = len(upstream_seq) - true_match_end
                     #   biological coord = -(actual_upstream - forward_position)
+                    #
+                    # IMPORTANT: Because we use a zero-width lookahead assertion (?=(...)),
+                    # match.end() always equals match.start() — the outer match consumes
+                    # zero characters. Using match.end() directly would place every RC hit
+                    # at the wrong position (off by the motif length). We must calculate
+                    # the true end from the captured group's length instead.
                     rc_seq = str(Seq(upstream_seq).reverse_complement())
                     for match in safe_pattern.finditer(rc_seq):
-                        fwd_pos = len(upstream_seq) - match.end()
+                        true_match_end = match.start() + len(match.group(1))
+                        fwd_pos = len(upstream_seq) - true_match_end
                         rel_pos = -(actual_upstream - fwd_pos)
                         matches.append((rel_pos, match.group(1), "-"))
 
