@@ -18,11 +18,11 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 import sys
 import argparse
-from pathlib import Path
+
 from collections import Counter
 from utils import base_parser, extract_upstream_sequence
 
@@ -83,7 +83,8 @@ def main() -> None:
     if args.u_target < 1 or args.u_regulator < 1:
         sys.exit("[!] Upstream values must be positive integers.")
 
-    output_path = Path(args.output) if args.output else None
+    # args.output is already a Path from base_parser (type=Path); no re-wrapping needed
+    output_path = args.output
 
     try:
         # Extract sequences
@@ -100,29 +101,64 @@ def main() -> None:
 
         all_kmers = sorted(set(t_counts) | set(r_counts))
 
-        # Output preparation
+        # The correct denominator for CPK is L - k + 1 (the actual number of
+        # sliding windows), NOT the raw sequence length L.
+        # Using L inflates the denominator and deflates CPK density.
+        # For example, a 150bp sequence with k=6 has 145 windows, not 150.
+        total_t_windows = max(1, len(t_seq) - args.kmer + 1)
+        total_r_windows = max(1, len(r_seq) - args.kmer + 1)
+
+        def calc_cpk(count: int, total_windows: int) -> float:
+            """Counts Per Kilobase, normalized by actual k-mer window count."""
+            return (count / total_windows) * 1000
+
         if output_path:
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(
-                    "Kmer\tTarget_Count\tRegulator_Count\tTarget_CPK\tRegulator_CPK\n"
+                    "Kmer\tTarget_Count\tRegulator_Count\t"
+                    "Target_CPK\tRegulator_CPK\tCPK_Diff\n"
                 )
                 for kmer in all_kmers:
-                    t_c = t_counts[kmer]
-                    r_c = r_counts[kmer]
-                    t_cpk = (t_c / len(t_seq)) * 1000
-                    r_cpk = (r_c / len(r_seq)) * 1000
-                    f.write(f"{kmer}\t{t_c}\t{r_c}\t{t_cpk:.2f}\t{r_cpk:.2f}\n")
-            print(f"[*] Success! Analysis written to {output_path.name}")
+                    t_c = t_counts.get(kmer, 0)
+                    r_c = r_counts.get(kmer, 0)
+                    t_cpk = calc_cpk(t_c, total_t_windows)
+                    r_cpk = calc_cpk(r_c, total_r_windows)
+                    cpk_diff = abs(t_cpk - r_cpk)
+                    f.write(
+                        f"{kmer}\t{t_c}\t{r_c}\t"
+                        f"{t_cpk:.2f}\t{r_cpk:.2f}\t{cpk_diff:.2f}\n"
+                    )
+            print(
+                f"[*] Success! Analysis written to {output_path.resolve()}",
+                file=sys.stderr,
+            )
 
         else:
-            print(f"{'Kmer':<10} | {'Target':<10} | {'Reg':<10}")
-            print("-" * 35)
-            # Just print the top N sorted by Target frequency for terminal
-            top_kmers = sorted(t_counts.items(), key=lambda x: x[1], reverse=True)[
-                : args.top
-            ]
-            for kmer, count in top_kmers:
-                print(f"{kmer:<10} | {count:<10} | {r_counts[kmer]:<10}")
+            # Terminal output: sort by absolute CPK difference to surface the most
+            # biologically distinct k-mers. Sorting by raw count is wrong here because
+            # target and regulator windows may have different lengths — only CPK-
+            # normalised values are fairly comparable across the two sequences.
+            print(
+                f"[*] Showing top {args.top} k-mers by absolute CPK difference\n",
+                file=sys.stderr,
+            )
+            print(f"{'Kmer':<10} | {'Target CPK':<12} | {'Reg CPK':<12} | {'|Diff|'}")
+            print("-" * 52)
+
+            top_kmers = sorted(
+                all_kmers,
+                key=lambda k: abs(
+                    calc_cpk(t_counts.get(k, 0), total_t_windows)
+                    - calc_cpk(r_counts.get(k, 0), total_r_windows)
+                ),
+                reverse=True,
+            )[: args.top]
+
+            for kmer in top_kmers:
+                t_cpk = calc_cpk(t_counts.get(kmer, 0), total_t_windows)
+                r_cpk = calc_cpk(r_counts.get(kmer, 0), total_r_windows)
+                diff = abs(t_cpk - r_cpk)
+                print(f"{kmer:<10} | {t_cpk:<12.2f} | {r_cpk:<12.2f} | {diff:.2f}")
 
     except (FileNotFoundError, ValueError) as e:
         # Cleanup partial file on error

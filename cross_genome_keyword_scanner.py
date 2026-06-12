@@ -29,14 +29,29 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.3"
+__version__ = "1.1.0"
 
 import sys
 import argparse
 from pathlib import Path
 from collections import defaultdict
-from Bio import SeqIO
+
+try:
+    from Bio import SeqIO
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import stream_reference_files, wrap_fasta
+
+try:
+    from tqdm import tqdm
+
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    tqdm = lambda x, **kwargs: x
 
 
 def scan_file_for_keywords(
@@ -44,15 +59,24 @@ def scan_file_for_keywords(
 ) -> dict[str, list[dict]]:
     """Parses a GenBank file to find CDS features matching target keywords.
 
+    Matching is case-insensitive substring search across the product, gene,
+    and note qualifiers combined. A single CDS can match multiple keywords
+    independently.
+
     Note:
-        Parsing errors (OSError, ValueError) are caught internally and logged to stderr.
+        Substring matching means short keywords may over-match. For example,
+        searching 'cin' will match 'bacteriocin', 'nisin', 'colistin', etc.
+        Use specific keywords (e.g., 'bacteriocin' not 'cin') for clean results.
+
+        Parsing errors (OSError, ValueError) are caught internally and logged
+        to stderr, allowing batch scanning to continue.
 
     Args:
         file_path: Path to the .gbk or .gbff file.
-        keywords: A list of string keywords to search for.
+        keywords:  A list of string keywords to search for (case-insensitive).
 
     Returns:
-        A dictionary mapping the matched keyword to a list of feature metadata.
+        A dictionary mapping each matched keyword to a list of feature metadata.
     """
     lower_keywords = [k.lower() for k in keywords]
     hits = defaultdict(list)
@@ -143,6 +167,17 @@ def get_args() -> argparse.Namespace:
         action="store_true",
         help="If flagged, automatically generates a matching FASTA file alongside the TSV output.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Increase output verbosity. By default, only major milestones and "
+            "a progress bar are shown. With --verbose, every file being scanned "
+            "is printed. Useful for debugging."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -165,8 +200,16 @@ def main() -> None:
     scanned_files = 0
 
     try:
-        for file_path in stream_reference_files(args.input):
-            print(f"  -> Scanning {file_path.name}...", file=sys.stderr)
+        ref_files = list(stream_reference_files(args.input))
+        ref_iter = tqdm(
+            ref_files,
+            desc="Scanning genomes",
+            disable=not HAS_TQDM or args.verbose,
+        )
+
+        for file_path in ref_iter:
+            if args.verbose:
+                print(f"  -> Scanning {file_path.name}...", file=sys.stderr)
             scanned_files += 1
             file_hits = scan_file_for_keywords(file_path, args.keywords)
 

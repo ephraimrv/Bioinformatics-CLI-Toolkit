@@ -29,14 +29,29 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 import sys
 import argparse
 from pathlib import Path
 from collections import defaultdict
-from Bio import SeqIO
+
+try:
+    from Bio import SeqIO
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import stream_reference_files, wrap_fasta
+
+try:
+    from tqdm import tqdm
+
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    tqdm = lambda x, **kwargs: x
 
 
 def extract_all_cds_features(file_path: Path) -> list[dict]:
@@ -127,6 +142,17 @@ def get_args() -> argparse.Namespace:
         action="store_true",
         help="If flagged, automatically generates a matching FASTA file alongside the TSV output.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Increase output verbosity. By default, only major milestones and "
+            "a progress bar are shown. With --verbose, every file being scanned "
+            "is printed. Useful for debugging."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -137,21 +163,33 @@ def main() -> None:
     if args.min_genomes < 1:
         sys.exit("[!] --min_genomes must be at least 1.")
 
-    print(f"[*] Target Directory: {args.input.name}")
     condition_str = "==" if args.exact else ">="
+    print(f"[*] Target Directory : {args.input.name}", file=sys.stderr)
     print(
-        f"[*] Condition: Must be present in {condition_str} {args.min_genomes} genomes"
+        f"[*] Condition        : Present in {condition_str} {args.min_genomes} genomes",
+        file=sys.stderr,
     )
-
     if not args.keep_hypothetical:
-        print("[*] Filter: Ignoring 'hypothetical protein' annotations\n")
+        print(
+            "[*] Filter           : Ignoring 'hypothetical protein' annotations",
+            file=sys.stderr,
+        )
+    print("", file=sys.stderr)
 
     master_results = defaultdict(lambda: defaultdict(list))
     scanned_files = 0
 
     try:
-        for file_path in stream_reference_files(args.input):
-            print(f"  -> Scanning {file_path.name}...")
+        ref_files = list(stream_reference_files(args.input))
+        ref_iter = tqdm(
+            ref_files,
+            desc="Scanning genomes",
+            disable=not HAS_TQDM or args.verbose,
+        )
+
+        for file_path in ref_iter:
+            if args.verbose:
+                print(f"  -> Scanning {file_path.name}...", file=sys.stderr)
             scanned_files += 1
             features = extract_all_cds_features(file_path)
 
@@ -161,9 +199,9 @@ def main() -> None:
                     continue
                 master_results[norm_key][file_path.name].append(feat)
 
-        print(f"\n[*] Scan complete. Parsed {scanned_files} files.")
-        print("[*] Aggregating and filtering data...")
-        print("-" * 60)
+        print(f"\n[*] Scan complete. Parsed {scanned_files} files.", file=sys.stderr)
+        print("[*] Aggregating and filtering data...", file=sys.stderr)
+        print("-" * 60, file=sys.stderr)
 
         tsv_lines = [
             "Conserved_Product_Group\tGenomes_Found\tGenome_File\tLocus\tLocus_Tag\tOriginal_Product\tProtein_Sequence"
@@ -171,10 +209,20 @@ def main() -> None:
         fasta_lines = []
         conserved_count = 0
 
-        # 3-Tier Sorting Logic:
-        # Negative numbers sort descending (highest conservation first), strings sort ascending (A-Z)
+        # Filter first, THEN sort — avoids sorting items that will be discarded
+        filtered_results = {
+            norm_key: genomes_dict
+            for norm_key, genomes_dict in master_results.items()
+            if (
+                (len(genomes_dict) == args.min_genomes)
+                if args.exact
+                else (len(genomes_dict) >= args.min_genomes)
+            )
+        }
+
+        # 3-Tier sort: genome count → hit count → alphabetical (all ascending)
         sorted_results = sorted(
-            master_results.items(),
+            filtered_results.items(),
             key=lambda item: (
                 len(item[1]),  # Tier 1: Genome count (Ascending)
                 sum(
@@ -186,29 +234,26 @@ def main() -> None:
 
         for norm_key, genomes_dict in sorted_results:
             genome_count = len(genomes_dict)
-            meets_condition = (
-                (genome_count == args.min_genomes)
-                if args.exact
-                else (genome_count >= args.min_genomes)
-            )
-
-            if meets_condition:
-                conserved_count += 1
-                for genome_name, hits in genomes_dict.items():
-                    for hit in hits:
-                        tsv_lines.append(
-                            f"{norm_key}\t{genome_count}\t{genome_name}\t{hit['locus']}\t"
-                            f"{hit['locus_tag']}\t{hit['original_product']}\t{hit['translation']}"
-                        )
-                        if args.fasta and hit["translation"] is not None:
-                            header = f">{genome_name}|{hit['locus']}|{hit['locus_tag']}|{hit['original_product']}"
-                            seq_wrapped = wrap_fasta(hit["translation"])
-                            fasta_lines.append(f"{header}\n{seq_wrapped}")
+            conserved_count += 1
+            for genome_name, hits in genomes_dict.items():
+                for hit in hits:
+                    tsv_lines.append(
+                        f"{norm_key}\t{genome_count}\t{genome_name}\t{hit['locus']}\t"
+                        f"{hit['locus_tag']}\t{hit['original_product']}\t{hit['translation']}"
+                    )
+                    if args.fasta and hit["translation"] is not None:
+                        header = f">{genome_name}|{hit['locus']}|{hit['locus_tag']}|{hit['original_product']}"
+                        seq_wrapped = wrap_fasta(hit["translation"])
+                        fasta_lines.append(f"{header}\n{seq_wrapped}")
 
         if conserved_count == 0:
-            print(f"[!] No functional annotations met the threshold criteria.")
             print(
-                f"[-] Output file {args.output.name} was not created to prevent empty datasets."
+                f"[!] No functional annotations met the threshold criteria.",
+                file=sys.stderr,
+            )
+            print(
+                f"[-] Output file {args.output.name} was not created to prevent empty datasets.",
+                file=sys.stderr,
             )
         else:
             # utf-8-sig adds a BOM, enabling auto-detection in Excel without a manual import step
@@ -216,16 +261,22 @@ def main() -> None:
                 out_tsv.write("\n".join(tsv_lines) + "\n")
 
             print(
-                f"[*] Success! {conserved_count} distinct functional groups met the threshold."
+                f"[*] Success! {conserved_count} distinct functional groups met the threshold.",
+                file=sys.stderr,
             )
-            print(f"[*] TSV matrix written to: {args.output.name}")
+            print(
+                f"[*] TSV matrix written to : {args.output.resolve()}", file=sys.stderr
+            )
 
             if args.fasta and fasta_lines:
                 fasta_path = args.output.with_suffix(".fasta")
                 # FASTA must use standard utf-8, as downstream aligners will fail if a BOM is present
                 with open(fasta_path, "w", encoding="utf-8") as out_fasta:
                     out_fasta.write("\n".join(fasta_lines) + "\n")
-                print(f"[*] FASTA sequences written to: {fasta_path.name}")
+                print(
+                    f"[*] FASTA sequences written to : {fasta_path.resolve()}",
+                    file=sys.stderr,
+                )
 
     except KeyboardInterrupt:
         sys.exit("\n[!] Scan interrupted by user.")
