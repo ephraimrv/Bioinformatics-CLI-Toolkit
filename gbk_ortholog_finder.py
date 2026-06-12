@@ -593,6 +593,7 @@ def calculate_identity(seq_a: str, seq_b: str) -> tuple[float, int, int]:
 def _load_reference_proteins(
     ref_path: Path,
     use_mature: bool = False,
+    verbose: bool = False,
 ) -> list[_RefProtein]:
     """Loads all CDS proteins from a reference GenBank file.
 
@@ -603,12 +604,14 @@ def _load_reference_proteins(
 
     If ``use_mature=True`` and a protein's mature core becomes zero-length
     (e.g. the signal peptide is longer than the entire protein), the protein
-    is silently skipped with a warning printed to stderr.
+    is skipped and a warning is printed to stderr. This provides transparency
+    about what the script did with your data.
 
     Args:
         ref_path:   Path to the reference GBK/GBFF file.
         use_mature: If ``True``, applies ``calculate_mature_core()`` to each
                     protein so that ``cmp_seq`` is the trimmed mature core.
+        verbose:    (Unused; kept for API consistency.)
 
     Returns:
         List of ``_RefProtein`` objects with pre-computed comparison data.
@@ -632,11 +635,15 @@ def _load_reference_proteins(
             # Skip proteins whose mature core is zero-length or None
             if not cmp_seq or len(cmp_seq) == 0:
                 locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
-                print(
+                msg = (
                     f"  [!] Skipping {locus_tag}: mature core is zero-length. "
-                    f"(Signal peptide may be longer than the full protein.)",
-                    file=sys.stderr,
+                    f"(Signal peptide may be longer than the full protein.)"
                 )
+                # tqdm.write() handles output properly when progress bar is active
+                if HAS_TQDM:
+                    tqdm.write(msg, file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
                 skipped_zero_length += 1
                 continue
 
@@ -652,10 +659,12 @@ def _load_reference_proteins(
             )
 
     if skipped_zero_length > 0:
-        print(
-            f"  [{skipped_zero_length} protein(s) skipped due to zero-length mature core]",
-            file=sys.stderr,
-        )
+        summary_msg = f"  [{skipped_zero_length} protein(s) skipped due to zero-length mature core]"
+        # tqdm.write() handles output properly when progress bar is active
+        if HAS_TQDM:
+            tqdm.write(summary_msg, file=sys.stderr)
+        else:
+            print(summary_msg, file=sys.stderr)
 
     return proteins
 
@@ -672,6 +681,7 @@ def find_orthologs(
     use_mature: bool,
     min_coverage: float = 0.50,
     coverage_mode: str = "min",
+    verbose: bool = False,
 ) -> list[OrthoHit]:
     """Compares query proteins against all CDS in a reference file.
 
@@ -690,6 +700,7 @@ def find_orthologs(
                         uses the longer sequence (correct for whole-protein
                         orthologs). When ``'max'``, the length ratio pre-filter
                         is also enforced to reject size-mismatched pairs early.
+        verbose:        If ``True``, print details during processing.
 
     Returns:
         List of ``OrthoHit`` objects for all pairs passing all filters.
@@ -699,7 +710,9 @@ def find_orthologs(
     # Load reference proteins with cmp_seq and k-mers pre-computed.
     # calculate_mature_core() and _build_kmers() are called here ONCE per
     # reference protein — never again inside the nested query loop below.
-    ref_proteins = _load_reference_proteins(ref_path, use_mature=use_mature)
+    ref_proteins = _load_reference_proteins(
+        ref_path, use_mature=use_mature, verbose=verbose
+    )
     if not ref_proteins:
         return hits
 
@@ -789,10 +802,10 @@ def print_hits_table(hits: list[OrthoHit]) -> None:
         print("No hits found above the identity and coverage thresholds.")
         return
 
-    cQL, cQP = 15, 23
-    cRL, cRP = 14, 25
+    cQL, cQP = 12, 20
+    cRL, cRP = 15, 25
     cRF = 23
-    cID, cAL, cQL2, cRL2 = 10, 7, 9, 7
+    cID, cAL, cQL2, cRL2 = 10, 10, 10, 10
 
     header = (
         f"{'Query Locus':<{cQL}} | {'Query Product':<{cQP}} | "
@@ -818,7 +831,7 @@ def print_hits_table(hits: list[OrthoHit]) -> None:
         print(
             f"{hit.query_locus:<{cQL}} | {qp:<{cQP}} | "
             f"{hit.ref_locus:<{cRL}} | {rp:<{cRP}} | "
-            f"{hit.ref_file:<{cRF}} | {hit.identity*100:>{cID-1}.2f}% | "
+            f"{hit.ref_file:<{cRF}} | {hit.identity*100:>{cID-1}.1f}% | "
             f"{hit.alignment_length:>{cAL}} | {hit.query_length:>{cQL2}} | "
             f"{hit.ref_length:>{cRL2}}"
         )
@@ -867,7 +880,7 @@ def write_tsv(hits: list[OrthoHit], out_handle) -> None:
                 hit.query_seq,
                 hit.ref_seq,
                 hit.mismatches,
-                f"{hit.identity * 100:.2f}",
+                f"{hit.identity * 100:.1f}",
                 hit.alignment_length,
                 hit.query_length,
                 hit.ref_length,
@@ -927,7 +940,7 @@ def write_fasta(hits: list[OrthoHit], fasta_path: Path) -> None:
 
             header = (
                 f">{hit.ref_locus} | {hit.ref_product} | "
-                f"{hit.ref_file} | {hit.identity*100:.2f}% identity | {hit.ref_length}aa"
+                f"{hit.ref_file} | {hit.identity*100:.1f}% identity | {hit.ref_length}aa"
             )
             fh.write(f"{header}\n")
             fh.write(f"{hit.ref_seq}\n")
@@ -980,7 +993,9 @@ def main() -> None:
 
         # Use progress bar if tqdm is available, otherwise just iterate
         ref_iter = tqdm(
-            ref_files, desc="Scanning references", disable=not HAS_TQDM or args.verbose
+            ref_files,
+            desc="Scanning references",
+            disable=not HAS_TQDM or args.verbose,
         )
 
         for ref_file in ref_iter:
@@ -997,6 +1012,7 @@ def main() -> None:
                 use_mature=args.mature,
                 min_coverage=args.min_coverage,
                 coverage_mode=args.coverage_mode,
+                verbose=args.verbose,
             )
             # Only print results summary if verbose
             if args.verbose:
