@@ -12,6 +12,8 @@ reference file or a directory of reference files.
 
 Performance pipeline (each stage cheaper than the last):
     1. Length ratio filter  — skips pairs outside 0.5–2.0 length ratio (O(1)).
+       Only active when ``--coverage-mode max``. Skipped in ``min`` mode to
+       allow small peptides (bacteriocins) to match within larger proteins.
     2. k-mer Jaccard filter — skips pairs sharing too few 4-mers to meet the
        identity threshold (O(n+m) Python, no alignment needed).
     3. Score pre-filter     — calls ``aligner.score()`` which runs entirely in
@@ -25,14 +27,33 @@ Performance pipeline (each stage cheaper than the last):
     per reference file before the inner query loop runs, so these operations
     are never repeated inside the nested comparison.
 
-Flag interaction — ``--mature`` and ``--min-coverage``:
+Flag interaction — ``--mature``, ``--min-coverage``, and ``--coverage-mode``:
+    **Coverage mode choice determines your search goal:**
+
+    ``--coverage-mode min`` (default; bacteriocin/domain-centric search):
+        Coverage is measured against the shorter sequence. A 40 aa bacteriocin
+        core may be fully present (100%% coverage) inside a 1000 aa multi-domain
+        reference protein. The length ratio filter is skipped to allow this.
+        Use this when searching for conserved peptides, domains, or bacteriocins.
+
+    ``--coverage-mode max`` (whole-protein ortholog search):
+        Coverage is measured against the longer sequence. Both proteins must be
+        substantially similar in size (0.5–2.0 ratio enforced). Use this for
+        strict 1:1 ortholog identification in full-genome comparisons.
+
     ``--mature`` trims signal peptides from both query and reference proteins
-    before alignment, so only the bioactive mature core is compared.
-    ``--min-coverage`` then measures how much of the shorter *trimmed* sequence
-    is covered by the alignment. Used together, they require that the entire
-    mature core — not just a short conserved motif — is genuinely present in
-    the reference. This combination is strongly recommended for bacteriocin
-    and small-peptide searches.
+    before alignment, so only the bioactive mature core is compared. Recommended
+    for bacteriocins, lantibiotics, and secreted peptides.
+
+    ``--min-coverage`` (0.0–1.0) gates hits on alignment coverage. At 0.65 with
+    ``--coverage-mode min``, you require at least 65%% of the shorter sequence
+    to align. With ``--coverage-mode max``, at least 65%% of the longer sequence
+    must align (much stricter for size-mismatched pairs).
+
+    **Recommended combinations:**
+        - Bacteriocin search: ``--mature --coverage-mode min --min-coverage 0.65``
+        - Whole-genome orthologs: ``--coverage-mode max --min-coverage 0.75``
+        - General comparative: ``--coverage-mode min --min-coverage 0.50``
 
 Note:
     This script is part of ongoing research and is associated with an upcoming
@@ -40,27 +61,30 @@ Note:
     Released under the MIT License. See LICENSE in the repository root.
 
 Example:
-    Compare a region GBK against a single reference genome::
-
-        python3 gbk_ortholog_finder.py \\
-            -q region001.gbk -r ATCC8293.gbff -o results.tsv
-
-    Bacteriocin screen with signal peptide trimming::
+    Bacteriocin screen with signal peptide trimming and domain-centric search::
 
         python3 gbk_ortholog_finder.py \\
             -q region001.gbk -r references/ \\
-            --mature --max-length 150 --identity 0.35 --min-coverage 0.65 \\
+            --mature --coverage-mode min --max-length 150 \\
+            --identity 0.35 --min-coverage 0.65 \\
             -o bacteriocin_hits.tsv
 
-    Full genome vs directory of references::
+    Whole-protein ortholog search across genomes::
 
         python3 gbk_ortholog_finder.py \\
-            -q genome.gbff -r references/ --identity 0.40 -o results.tsv
+            -q genome.gbff -r references/ \\
+            --coverage-mode max --identity 0.40 --min-coverage 0.75 \\
+            -o ortholog_hits.tsv
+
+    Region vs single reference (default mode)::
+
+        python3 gbk_ortholog_finder.py \\
+            -q region001.gbk -r ATCC8293.gbff -o results.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4"
+__version__ = "1.5"
 
 import sys
 import argparse
@@ -219,13 +243,30 @@ def get_args() -> argparse.Namespace:
         type=float,
         default=0.50,
         help=(
-            "How much of the shorter protein must be covered by the alignment "
+            "How much of the protein must be covered by the alignment "
             "(0.0–1.0, i.e. 0.50 = 50%%). "
             "This prevents hits where only a small conserved domain (e.g. a signal "
             "peptide or a zinc-finger motif) matches, while the rest of the protein "
             "is unrelated. When used with --mature, coverage is measured against the "
             "trimmed mature core, so 0.70 means '70%% of the active peptide aligns'. "
             "Recommended range: 0.50 (permissive) to 0.80 (strict). Default: 0.50."
+        ),
+    )
+    parser.add_argument(
+        "--coverage-mode",
+        choices=["min", "max"],
+        default="min",
+        help=(
+            "Which sequence length to use as the denominator for coverage calculation. "
+            "'min' uses the shorter sequence length — best for bacteriocin cores and "
+            "conserved domain searches, where a small peptide (50 aa) may be fully "
+            "present inside a much larger protein (1000 aa) and you want 100%% coverage "
+            "reported in that case. "
+            "'max' uses the longer sequence length — best for strict whole-protein "
+            "ortholog searches, where you want both proteins to be substantially "
+            "similar in length. Using 'max' also enforces a 0.5–2.0 length ratio "
+            "pre-filter so extremely size-mismatched pairs are skipped early. "
+            "Default: min."
         ),
     )
     parser.add_argument(
@@ -605,10 +646,11 @@ def find_orthologs(
     min_identity: float,
     use_mature: bool,
     min_coverage: float = 0.50,
+    coverage_mode: str = "min",
 ) -> list[OrthoHit]:
     """Compares query proteins against all CDS in a reference file.
 
-    Applies four filters in order of increasing computational cost. The
+    Applies filters in order of increasing computational cost. The
     majority of pairs (typically >99 %%) are rejected before the full
     alignment ever runs.
 
@@ -617,7 +659,12 @@ def find_orthologs(
         ref_path:       Path to the reference file.
         min_identity:   Minimum identity (0.0–1.0) to report a hit.
         use_mature:     If ``True``, uses mature sequences for comparison.
-        min_coverage:   Minimum alignment coverage of the shorter sequence.
+        min_coverage:   Minimum alignment coverage fraction to report a hit.
+        coverage_mode:  ``'min'`` uses the shorter sequence as denominator
+                        (correct for bacteriocin/domain searches). ``'max'``
+                        uses the longer sequence (correct for whole-protein
+                        orthologs). When ``'max'``, the length ratio pre-filter
+                        is also enforced to reject size-mismatched pairs early.
 
     Returns:
         List of ``OrthoHit`` objects for all pairs passing all filters.
@@ -639,9 +686,14 @@ def find_orthologs(
         for ref in ref_proteins:
 
             # Filter 1 — length ratio (O(1)) ──────────────────────────────────
-            ratio = query_len / max(ref.length, 1)
-            if ratio < 0.5 or ratio > 2.0:
-                continue
+            # Only enforced in 'max' mode (whole-protein ortholog search).
+            # In 'min' mode (domain/bacteriocin search) a small peptide (40 aa)
+            # may legitimately match one domain of a large protein (1000 aa);
+            # a strict ratio filter would incorrectly reject those pairs.
+            if coverage_mode == "max":
+                ratio = query_len / max(ref.length, 1)
+                if ratio < 0.5 or ratio > 2.0:
+                    continue
 
             # Filter 2 — k-mer Jaccard (O(n+m) Python) ────────────────────────
             if not _passes_kmer_filter(query_kmers, ref.kmers, min_identity):
@@ -663,8 +715,15 @@ def find_orthologs(
                 continue
 
             # Filter 5 — coverage check ────────────────────────────────────────
-            shorter = min(query_len, ref.length)
-            coverage = aln_length / shorter if shorter > 0 else 0.0
+            # Denominator is chosen by coverage_mode:
+            #   'min' → shorter sequence: "Is the query fully present in the ref?"
+            #   'max' → longer sequence:  "Do both proteins mostly align?"
+            denominator = (
+                max(query_len, ref.length)
+                if coverage_mode == "max"
+                else min(query_len, ref.length)
+            )
+            coverage = aln_length / denominator if denominator > 0 else 0.0
             if coverage < min_coverage:
                 continue
 
@@ -865,7 +924,10 @@ def main() -> None:
     print(f"  Query        : {args.query}", file=sys.stderr)
     print(f"  Reference    : {args.reference}", file=sys.stderr)
     print(f"  Min identity : {args.identity * 100:.0f}%", file=sys.stderr)
-    print(f"  Min coverage : {args.min_coverage * 100:.0f}%", file=sys.stderr)
+    print(
+        f"  Min coverage : {args.min_coverage * 100:.0f}% ({args.coverage_mode} sequence)",
+        file=sys.stderr,
+    )
     print(
         f"  Mature core  : {'YES — signal peptides trimmed' if args.mature else 'NO'}",
         file=sys.stderr,
@@ -900,11 +962,12 @@ def main() -> None:
                 min_identity=args.identity,
                 use_mature=args.mature,
                 min_coverage=args.min_coverage,
+                coverage_mode=args.coverage_mode,
             )
             print(
                 f"      \u2192 {len(file_hits)} hit(s) above "
                 f"{args.identity*100:.0f}% identity / "
-                f"{args.min_coverage*100:.0f}% coverage",
+                f"{args.min_coverage*100:.0f}% coverage ({args.coverage_mode})",
                 file=sys.stderr,
             )
             all_hits.extend(file_hits)
