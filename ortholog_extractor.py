@@ -25,7 +25,14 @@ import sys
 import argparse
 from pathlib import Path
 from typing import Iterator
-from Bio import SeqIO
+
+try:
+    from Bio import SeqIO
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import stream_reference_files, calculate_mature_core, smart_open
 
 

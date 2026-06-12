@@ -22,7 +22,14 @@ import re
 import sys
 import traceback
 from typing import Iterator
-from Bio.Seq import Seq
+
+try:
+    from Bio.Seq import Seq
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import base_parser, wrap_fasta, extract_upstream_sequence
 
 
