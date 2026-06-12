@@ -13,7 +13,20 @@ License: MIT
 Reproducibility: Associated with upcoming research (manuscript in preparation).
 
 Example Usage:
-    $ python3 kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -o analysis.tsv
+    # Basic run: Compare two genes with default k=6, show top 20 k-mers
+    $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -o analysis.tsv
+
+    # Custom k-mer size: Use 8-mers instead of 6-mers
+    $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -k 8 -o analysis.tsv
+
+    # Custom upstream windows: Different for target (100bp) vs regulator (200bp)
+    $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 --u_target 100 --u_regulator 200 -o analysis.tsv
+
+    # Terminal output: Show top 10 k-mers sorted by CPK difference (no file)
+    $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 --top 10
+
+    # All custom: Eukaryotic enhancer analysis with 7-mers, large upstream windows
+    $ python3 comparative_kmer_analyzer.py -i yeast_genome.gbff -t YAL001C -r YAL003W -k 7 --u_target 2000 --u_regulator 3000 --top 15 -o enhancer_analysis.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
