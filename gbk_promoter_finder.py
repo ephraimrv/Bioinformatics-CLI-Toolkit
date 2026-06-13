@@ -18,11 +18,23 @@ __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
 __version__ = "1.1.1"
 
+import importlib
 import re
 import sys
 import traceback
 from typing import Iterator
-from Bio.Seq import Seq
+
+try:
+    bio_seq = importlib.import_module("Bio.Seq")
+    Seq = bio_seq.Seq
+except ImportError:
+    # If Biopython is unavailable, provide a minimal Seq-like helper
+    class Seq(str):
+        def reverse_complement(self):
+            trans = str.maketrans("ACGTacgt", "TGCAtgca")
+            return Seq(self.translate(trans))[::-1]
+
+
 from utils import base_parser, wrap_fasta, extract_upstream_sequence
 
 
@@ -69,9 +81,15 @@ def find_motif_regex_iterator(
         # zero characters. Using match.end() directly would place every RC hit
         # at the wrong position (off by the motif length). We must calculate
         # the true end from the captured group's length instead.
+        #
+        # Math note: len(sequence) == actual_len always (sequence IS the extracted
+        # upstream), so the two-step formula simplifies:
+        #   fwd_pos = len(sequence) - true_match_end
+        #   rel_pos = -(actual_len - fwd_pos)
+        #           = -(actual_len - actual_len + true_match_end)
+        #           = -true_match_end
         true_match_end = match.start() + len(match.group(1))
-        fwd_pos = len(sequence) - true_match_end
-        rel_pos = -(actual_len - fwd_pos)
+        rel_pos = -true_match_end
         yield rel_pos, match.group(1), "-"
 
 
