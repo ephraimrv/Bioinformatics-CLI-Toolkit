@@ -75,6 +75,7 @@ __version__ = "1.2.1"
 
 import re
 import sys
+import argparse
 import traceback
 from pathlib import Path
 from typing import Iterator
@@ -395,7 +396,12 @@ def stream_regulon_hits(
 
 
 def main() -> None:
-    parser = base_parser("Genome-Wide Regulon Scanner")
+    parser = argparse.ArgumentParser(
+        description="Genome-Wide Regulon Scanner\n"
+        "Regex-Based Statistical Model\n"
+        "Intended for prokayotic genomes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "-u",
         "--upstream",
