@@ -11,11 +11,11 @@ PROGRAMS:
     blastx  — translated nucleotide query vs protein database
 
 DEFAULT OUTPUT COLUMNS (outfmt 6 custom):
-    qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send evalue bitscore stitle scomnames
+    qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send evalue bitscore stitle sscinames
 
     Columns include coordinates (qstart, qend, sstart, send) which are
-    powerful for filtering in pandas, and stitle/scomnames which give the
-    full subject description and organism common name — more than what the
+    powerful for filtering in pandas, and stitle/sscinames which give the
+    full subject description and organism scientific name — more than what the
     NCBI web interface shows by default. Requires BLAST+ 2.3.0 or later.
 
 SEQUENCE SELECTION MODES:
@@ -87,7 +87,7 @@ except ImportError:
 
 COLUMNS = (
     "qseqid sseqid pident qcovs length mismatch gapopen "
-    "qstart qend sstart send evalue bitscore stitle scomnames"
+    "qstart qend sstart send evalue bitscore stitle sscinames"
 )
 HEADER_ROW = COLUMNS.replace(" ", "\t")
 
