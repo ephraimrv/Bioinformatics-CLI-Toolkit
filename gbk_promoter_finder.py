@@ -18,24 +18,87 @@ __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
 __version__ = "1.1.1"
 
-import importlib
 import re
 import sys
 import traceback
+from pathlib import Path
 from typing import Iterator
 
 try:
-    bio_seq = importlib.import_module("Bio.Seq")
-    Seq = bio_seq.Seq
+    from Bio import SeqIO
+    from Bio.Seq import Seq
 except ImportError:
-    # If Biopython is unavailable, provide a minimal Seq-like helper
-    class Seq(str):
-        def reverse_complement(self):
-            trans = str.maketrans("ACGTacgt", "TGCAtgca")
-            return Seq(self.translate(trans))[::-1]
-
-
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import base_parser, wrap_fasta, extract_upstream_sequence
+
+
+def _get_genome_label(gbk_path: Path, locus_tag: str) -> tuple[str, str]:
+    """Extract record ID and organism/strain label for a given locus tag.
+
+    Scans the GenBank file to find the record containing the target locus,
+    then pulls the organism name and strain qualifier from the source feature
+    or record annotations. Strain is appended only when not already embedded
+    in the organism string (e.g. NCBI already includes it in many entries).
+
+    Args:
+        gbk_path:  Path to the GenBank file.
+        locus_tag: Target locus tag to locate the correct record.
+
+    Returns:
+        Tuple of (record_id, genome_label).
+        genome_label is "Organism strain" or just "Organism" if strain is
+        absent or already included. Falls back gracefully if not found.
+    """
+    try:
+        for record in SeqIO.parse(gbk_path, "genbank"):
+            for feature in record.features:
+                if feature.type != "CDS":
+                    continue
+                if locus_tag not in feature.qualifiers.get("locus_tag", []):
+                    continue
+
+                # Found the correct record — extract organism and strain
+                organism = ""
+                strain = ""
+
+                # The /source feature is the most reliable location
+                for src in record.features:
+                    if src.type == "source":
+                        organism = src.qualifiers.get("organism", [""])[0]
+                        strain = src.qualifiers.get("strain", [""])[0]
+                        if not strain:
+                            strain = src.qualifiers.get("isolate", [""])[0]
+                        break
+
+                # Fall back to record-level annotations
+                if not organism:
+                    organism = record.annotations.get("organism", "")
+                if not strain:
+                    strain = record.annotations.get("strain", "")
+
+                # Skip Prokka placeholder values ("." or blank)
+                if organism in ("", "."):
+                    organism = ""
+                if strain in ("", "."):
+                    strain = ""
+
+                if organism and strain and strain not in organism:
+                    label = f"{organism} {strain}"
+                elif organism:
+                    label = organism
+                else:
+                    # Prokka/local assemblies: use the file stem as fallback
+                    label = gbk_path.stem
+
+                return record.id, label.strip()
+
+    except Exception:
+        pass
+
+    return "unknown", gbk_path.stem
 
 
 def find_motif_regex_iterator(
@@ -123,6 +186,8 @@ def main() -> None:
         )
 
         actual_len = len(upstream_seq)
+        record_id, genome_label = _get_genome_label(args.input, args.locus)
+        strand_symbol = "+" if strand == 1 else "-"
 
         print(
             f"[*] Found {args.locus} at {start}-{end} (Gene strand: {strand})",
@@ -153,10 +218,15 @@ def main() -> None:
 
         if args.output:
             with open(args.output, "w", encoding="utf-8") as out_file:
-                # FASTA header reflects actual extracted length
-                out_file.write(
-                    f">{args.locus}_upstream_{actual_len}bp_gene_strand_{strand}\n"
+                # NCBI-style FASTA header with | separators
+                fasta_header = (
+                    f">{args.locus}"
+                    f" | {record_id}"
+                    f" | {genome_label}"
+                    f" | {actual_len}bp upstream"
+                    f" | strand {strand_symbol}"
                 )
+                out_file.write(f"{fasta_header}\n")
                 out_file.write(f"{wrap_fasta(upstream_seq)}\n")
 
                 # TSV motif appendix: position is TSS-relative (negative = upstream)
