@@ -28,9 +28,10 @@ Example Usage:
     $ python3 alignment_conservation_profiler.py -i alignment.fasta -o profile_matrix.tsv
 
 Notes on Excel import:
-    TSV output uses UTF-8-SIG (BOM) encoding. To open without the
-    'Transform Data' wizard, use File > Open (not Data > Get Data).
-    Double-clicking the .tsv file from Windows Explorer also works.
+    TSV output uses UTF-8 encoding (plain, no BOM). When you open the file in
+    Excel, it will automatically recognize the header row. If the Transform Data
+    wizard appears, you can close it and Excel will display the data correctly.
+
 """
 
 __author__ = "Jan Ephraim R. Vallente"
@@ -179,26 +180,25 @@ def main() -> None:
     print(f"{'IC:':<{col_width}}{visual_entropy}")
 
     if args.output:
-        pos_header_tsv = "\t".join(str(i) for i in range(1, seq_length + 1))
-        tabbed_consensus = "\t".join(consensus)
-        tsv_rows = {
-            char: "\t".join(f"{val:.3f}" for val in ppm[char]) for char in "ACGT-"
-        }
-        tsv_entropy = "\t".join(f"{val:.3f}" for val in entropy)
-
-        output_lines = [
-            f"Position\t{pos_header_tsv}",
-            f"Consensus\t{tabbed_consensus}",
-        ]
-        for char in "ACGT-":
-            output_lines.append(f"{char}\t{tsv_rows[char]}")
-        output_lines.append(f"IC\t{tsv_entropy}")
-
         try:
-            # Trailing newline ensures spreadsheet apps recognise the last row.
-            # UTF-8-SIG BOM allows Excel to open directly (File > Open) without
-            # the 'Transform Data' wizard.
-            args.output.write_text("\n".join(output_lines) + "\n", encoding="utf-8-sig")
+            # Use open() + write() like regulon_scanner.py to ensure Excel
+            # recognizes row 1 as headers. Write headers first, separately.
+            with open(args.output, "w", encoding="utf-8") as tsv:
+                # Header row
+                pos_header_tsv = "\t".join(str(i) for i in range(1, seq_length + 1))
+                tsv.write(f"Position\t{pos_header_tsv}\n")
+
+                # Data rows
+                tabbed_consensus = "\t".join(consensus)
+                tsv.write(f"Consensus\t{tabbed_consensus}\n")
+
+                for char in "ACGT-":
+                    row = "\t".join(f"{ppm[char][i]:.3f}" for i in range(seq_length))
+                    tsv.write(f"{char}\t{row}\n")
+
+                ic_row = "\t".join(f"{val:.3f}" for val in entropy)
+                tsv.write(f"IC\t{ic_row}\n")
+
             print(
                 f"\n[*] Success! TSV written to: {args.output.resolve()}",
                 file=sys.stderr,
