@@ -11,15 +11,18 @@ PROGRAMS:
     blastx  — translated nucleotide query vs protein database
 
 DEFAULT OUTPUT COLUMNS (outfmt 6 custom):
-    qseqid sseqid pident length mismatch qcovs qstart qend sstart send evalue bitscore
+    qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send evalue bitscore stitle scomnames
 
-    Note: qcovs (query coverage per subject) replaces gapopen from the standard
-    12-column outfmt 6. Requires BLAST+ 2.3.0 or later.
+    Columns include coordinates (qstart, qend, sstart, send) which are
+    powerful for filtering in pandas, and stitle/scomnames which give the
+    full subject description and organism common name — more than what the
+    NCBI web interface shows by default. Requires BLAST+ 2.3.0 or later.
 
 SEQUENCE SELECTION MODES:
-    (none)            Blast every sequence in the file (default)
-    --range START END Blast a contiguous slice (1-indexed, inclusive)
-    --pick N [N ...]  Blast specific sequences by position (1-indexed)
+    (none)                      Blast every sequence in the file (default)
+    --range LOCUS_START LOCUS_END  Blast a contiguous slice in file order
+    --pick LOCUS_TAG [...]         Blast specific sequences by ID
+    --list                         Preview all IDs in the file and exit
 
 NCBI USAGE POLICY:
     Remote BLAST uses NCBI's public servers. A 5-second delay is enforced
@@ -34,22 +37,34 @@ Example Usage:
     # Blast all sequences with defaults (blastp, nr, e-value 1e-10)
     $ python3 remote_blast.py -i proteins.faa
 
-    # Blast sequences 1 through 20 less stringent e-value
-    $ python3 remote_blast.py -i proteins.faa --range 1 20 -e 1e-5
+    # Blast a range of sequences with less stringent e-value
+    $ python3 remote_blast.py -i proteins.faa --range ctg1_1 ctg1_20 -e 1e-5
 
     # Blast three specific sequences
-    $ python3 remote_blast.py -i proteins.faa --pick 1 36 45 -o picked.tsv
+    $ python3 remote_blast.py -i proteins.faa --pick ctg1_1 ctg1_36 ctg1_45 -o picked.tsv
 
     # Nucleotide blast against nt database
     $ python3 remote_blast.py -i genome.fna -p blastn
 
     # Translated blast, custom max hits
-    $ python3 remote_blast.py -i contigs.fna -p blastx --max-hits 100
+    $ python3 remote_blast.py -i contigs.fna -p blastx --max-hits 50
+
+    # Standard nr (equivalent to web BLAST "Clustered nr" option)
+    $ python3 remote_blast.py -i proteins.faa -e 1e-10
+
+    # RefSeq only (curated, fewer sequences, faster)
+    $ python3 remote_blast.py -i proteins.faa --db refseq_protein -e 1e-10
+
+    # Swiss-Prot (manually reviewed, highest quality)
+    $ python3 remote_blast.py -i proteins.faa --db swissprot -e 1e-10
+
+    # Protein Data Bank
+    $ python3 remote_blast.py -i proteins.faa --db pdb -e 1e-10
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import subprocess
@@ -71,8 +86,8 @@ except ImportError:
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 COLUMNS = (
-    "qseqid sseqid pident length mismatch "
-    "qcovs qstart qend sstart send evalue bitscore"
+    "qseqid sseqid pident qcovs length mismatch gapopen "
+    "qstart qend sstart send evalue bitscore stitle scomnames"
 )
 HEADER_ROW = COLUMNS.replace(" ", "\t")
 
@@ -165,9 +180,11 @@ examples:
         default=None,
         metavar="DB",
         help=(
-            "BLAST database name. "
+            "BLAST database name (NCBI remote). "
             "Defaults: nr (blastp/blastx), nt (blastn). "
-            "Other options: refseq_protein, swissprot, refseq_rna, etc."
+            "Other options: refseq_protein, swissprot, pdb, refseq_rna, etc. "
+            "Note: 'Clustered nr' in the web BLAST UI is a presentation option on the "
+            "standard 'nr' database — use --db nr for the equivalent."
         ),
     )
     parser.add_argument(
