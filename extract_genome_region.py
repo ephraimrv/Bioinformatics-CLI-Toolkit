@@ -785,6 +785,7 @@ def extract_region_mode(target, organism: str, args: argparse.Namespace) -> None
     print()
 
     # ── Write outputs ─────────────────────────────────────────────────────────
+    generated_outputs = []
     if args.gbk:
         region.id = f"{target.id}:{c1}-{c2}"
         region.name = region.id[:16]
@@ -792,22 +793,31 @@ def extract_region_mode(target, organism: str, args: argparse.Namespace) -> None
             f" {organism}" if organism else ""
         )
         n = write_gbk(region, args.gbk)
+        generated_outputs.append(args.gbk)
         print(f"  [+] GBK      \u2192 {args.gbk}  ({n} CDS features)")
 
     if args.fna:
         write_fna(region, c1, c2, target.id, organism, args.fna)
+        generated_outputs.append(args.fna)
         print(f"  [+] FNA      \u2192 {args.fna}  ({region_len:,} bp, 1 entry)")
 
     if args.faa:
         n = write_faa(region, target.id, organism, args.faa)
+        generated_outputs.append(args.faa)
         print(f"  [+] FAA      \u2192 {args.faa}  ({n} proteins)")
 
     if args.gene_fna:
         n = write_gene_fna(region, target.id, organism, args.gene_fna)
+        generated_outputs.append(args.gene_fna)
         print(f"  [+] gene-FNA \u2192 {args.gene_fna}  ({n} gene sequences)")
 
-    print()
-    print("[*] Done.")
+    if generated_outputs:
+        header = f"{'OUTPUT FILE' if len(generated_outputs) == 1 else 'ALL OUTPUT FILES'} GENERATED:"
+        print(f"\n{'=' * 40}")
+        print(header)
+        for path in generated_outputs:
+            print(f"  - {Path(path).resolve()}")
+        print("=" * 40)
 
 
 def extract_genes_mode(
@@ -858,6 +868,7 @@ def extract_genes_mode(
     print()
 
     # ── Write outputs ─────────────────────────────────────────────────────────
+    generated_outputs = []
     if args.gbk:
         for tag, c1, c2, region, n_cds in regions:
             gbk_path = Path(str(args.gbk).replace(".gbk", f"_{tag}.gbk"))
@@ -867,6 +878,7 @@ def extract_genes_mode(
                 f" {organism}" if organism else ""
             )
             write_gbk(region, gbk_path)
+            generated_outputs.append(str(gbk_path))
             print(f"  [+] GBK      \u2192 {gbk_path}  ({n_cds} CDS)")
 
     if args.faa:
@@ -875,6 +887,7 @@ def extract_genes_mode(
             for tag, c1, c2, region, _ in regions:
                 written = _append_faa_to_file(region, target.id, organism, f_out)
                 total_written += written
+        generated_outputs.append(args.faa)
         print(f"  [+] FAA      \u2192 {args.faa}  ({total_written} proteins)")
 
     if args.gene_fna:
@@ -883,12 +896,18 @@ def extract_genes_mode(
             for tag, c1, c2, region, _ in regions:
                 written = _append_gene_fna_to_file(region, target.id, organism, f_out)
                 total_written += written
+        generated_outputs.append(args.gene_fna)
         print(
             f"  [+] gene-FNA \u2192 {args.gene_fna}  ({total_written} gene sequences)"
         )
 
-    print()
-    print("[*] Done.")
+    if generated_outputs:
+        header = f"{'OUTPUT FILE' if len(generated_outputs) == 1 else 'ALL OUTPUT FILES'} GENERATED:"
+        print("\n" + "=" * 40)
+        print(f"{header}")
+        for path in generated_outputs:
+            print(f"  - {Path(path).resolve()}")
+        print("=" * 40)
 
 
 def _append_faa_to_file(region, source_seq_id: str, organism: str, f_out) -> int:
