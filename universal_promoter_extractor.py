@@ -50,7 +50,6 @@ __version__ = "1.2.0"
 
 import sys
 import argparse
-import re
 from pathlib import Path
 from typing import Iterator
 
@@ -62,6 +61,60 @@ except ImportError:
         "       Install it with: pip install biopython"
     )
 from utils import stream_reference_files
+
+
+def _get_genome_label(record, file_stem: str = "") -> str:
+    """Extract organism/strain label from a BioPython SeqRecord.
+
+    Checks the source feature first (most reliable), then falls back to
+    record-level annotations. Appends strain only when not already embedded
+    in the organism string (NCBI often includes it in both fields).
+    For locally annotated genomes (e.g. Prokka drafts) where no organism
+    qualifier exists, falls back to the file stem name.
+
+    Args:
+        record:    BioPython SeqRecord object from SeqIO.parse().
+        file_stem: File name without extension — used as final fallback
+                   for locally assembled genomes lacking organism metadata.
+
+    Returns:
+        Label string such as "Lactobacillus mesenteroides C5",
+        "Homo sapiens", or the file stem as a last resort.
+    """
+    organism = ""
+    strain = ""
+
+    # /source feature is the most reliable location for organism and strain
+    for feature in record.features:
+        if feature.type == "source":
+            organism = feature.qualifiers.get("organism", [""])[0]
+            strain = feature.qualifiers.get("strain", [""])[0]
+            if not strain:
+                strain = feature.qualifiers.get("isolate", [""])[0]
+            break
+
+    # Fall back to record-level annotations
+    if not organism:
+        organism = record.annotations.get("organism", "")
+    if not strain:
+        strain = record.annotations.get("strain", "")
+
+    # Skip placeholder values produced by Prokka ("." or blank)
+    if organism in ("", "."):
+        organism = ""
+    if strain in ("", "."):
+        strain = ""
+
+    # Append strain only when not already in the organism string
+    if organism and strain and strain not in organism:
+        return f"{organism} {strain}".strip()
+    elif organism:
+        return organism.strip()
+    elif file_stem:
+        # Locally assembled / Prokka-annotated genomes have no organism qualifier
+        return file_stem
+    else:
+        return record.description.split(",")[0].strip() or "Unknown organism"
 
 
 def get_args() -> argparse.Namespace:
@@ -204,11 +257,12 @@ def extract_by_keywords(
         upstream_bp: Upstream window in bp.
 
     Yields:
-        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand)
+        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand, genome_label)
     """
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
             for record in SeqIO.parse(handle, "genbank"):
+                genome_label = _get_genome_label(record, gbk_path.stem)
                 for feature in record.features:
                     if feature.type != "CDS":
                         continue
@@ -228,7 +282,7 @@ def extract_by_keywords(
                             file=sys.stderr,
                         )
 
-                    yield record.id, locus_tag, product, upstream_seq, actual_upstream, strand
+                    yield record.id, locus_tag, product, upstream_seq, actual_upstream, strand, genome_label
 
     except Exception as e:
         raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
@@ -248,7 +302,7 @@ def extract_by_loci(
         upstream_bp: Upstream window in bp.
 
     Yields:
-        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand)
+        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand, genome_label)
     """
     target_set = set(locus_tags)
     found = set()
@@ -256,6 +310,7 @@ def extract_by_loci(
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
             for record in SeqIO.parse(handle, "genbank"):
+                genome_label = _get_genome_label(record, gbk_path.stem)
                 for feature in record.features:
                     if feature.type != "CDS":
                         continue
@@ -278,7 +333,7 @@ def extract_by_loci(
                             file=sys.stderr,
                         )
 
-                    yield record.id, locus_tag, product, upstream_seq, actual_upstream, strand
+                    yield record.id, locus_tag, product, upstream_seq, actual_upstream, strand, genome_label
 
         # Report any requested loci that were absent in this file
         for missing in sorted(target_set - found):
@@ -313,7 +368,7 @@ def extract_by_range(
         upstream_bp: Upstream window in bp.
 
     Yields:
-        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand)
+        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand, genome_label)
     """
     found_start = False
     found_end = False
@@ -321,6 +376,7 @@ def extract_by_range(
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
             for record in SeqIO.parse(handle, "genbank"):
+                genome_label = _get_genome_label(record, gbk_path.stem)
                 # Collect all CDS in this record with coordinates and tags
                 all_cds = []
                 for feature in record.features:
@@ -374,7 +430,7 @@ def extract_by_range(
                             file=sys.stderr,
                         )
 
-                    yield record.id, tag, product, upstream_seq, actual_upstream, strand
+                    yield record.id, tag, product, upstream_seq, actual_upstream, strand, genome_label
 
         if not found_start or not found_end:
             print(
@@ -451,7 +507,15 @@ def main() -> None:
                     )
 
                 for iterator in iterators:
-                    for seq_id, locus, prod, seq, actual_up, strand in iterator:
+                    for (
+                        seq_id,
+                        locus,
+                        prod,
+                        seq,
+                        actual_up,
+                        strand,
+                        genome_label,
+                    ) in iterator:
 
                         # File-aware deduplication — unique per (file, locus_tag)
                         dedup_key = (file_path.stem, locus)
@@ -462,17 +526,19 @@ def main() -> None:
                         seen_loci.add(dedup_key)
                         hits_found += 1
 
-                        # Sanitize product name for FASTA header
-                        clean_prod = re.sub(r"[^\w\-]", "_", prod)
-                        strand_label = strand if strand in (1, -1) else "unknown"
+                        strand_symbol = "+" if strand == 1 else "-"
 
+                        # NCBI-style FASTA header with | separators
                         fasta_header = (
-                            f">{seq_id}_{locus}_{clean_prod}"
-                            f"_upstream_{actual_up}bp_gene_strand_{strand_label}"
+                            f">{locus}"
+                            f" | {seq_id}"
+                            f" | {genome_label}"
+                            f" | {actual_up}bp upstream"
+                            f" | strand {strand_symbol}"
                         )
                         out_file.write(f"{fasta_header}\n{seq}\n")
                         print(
-                            f"      [Hit] {locus} | strand {strand_label} | {prod[:50]}",
+                            f"      [Hit] {locus} | {genome_label} | strand {strand_symbol} | {prod[:45]}",
                             file=sys.stderr,
                         )
 
