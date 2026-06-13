@@ -11,12 +11,28 @@ PROGRAMS:
     blastx  — translated nucleotide query vs protein database
 
 DEFAULT OUTPUT COLUMNS (outfmt 6 custom):
-    qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send evalue bitscore stitle sscinames
+    qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send evalue bitscore stitle
 
-    Columns include coordinates (qstart, qend, sstart, send) which are
-    powerful for filtering in pandas, and stitle/sscinames which give the
-    full subject description and organism scientific name — more than what the
-    NCBI web interface shows by default. Requires BLAST+ 2.3.0 or later.
+    Columns include:
+    - Coordinates (qstart qend sstart send) for powerful pandas-based filtering
+    - stitle: full subject description with organism in brackets
+      Example: "WP_014324148.1 Blp family class II bacteriocin [Leuconostoc mesenteroides]"
+
+CRITICAL NOTE — Taxonomy Fields (sscinames, scomnames) with `-remote`:
+    Taxonomic columns (sscinames, scomnames) require a local Taxonomy Database
+    (taxdb) to work. When using `-remote`, NCBI servers return only alignment
+    data, not taxonomy lookups. Without local taxdb files, these columns return N/A.
+
+    WORKAROUND: Extract organism name from stitle using regex in Python:
+
+        import pandas as pd
+        import re
+
+        df = pd.read_csv('output.blast.tsv', sep='\t')
+        df['organism'] = df['stitle'].str.extract(r'\[(.*?)\]', expand=False)
+        print(df[['qseqid', 'sseqid', 'organism', 'evalue']])
+
+    This extracts the organism name from the stitle brackets reliably.
 
 SEQUENCE SELECTION MODES:
     (none)                      Blast every sequence in the file (default)
@@ -64,7 +80,7 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import argparse
 import subprocess
@@ -85,9 +101,13 @@ except ImportError:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+# BLAST output columns. NOTE: taxonomic fields (sscinames, scomnames) require
+# a local Taxonomy Database (taxdb) to populate. With -remote, NCBI servers
+# return alignment data only, not taxonomy lookups, so those fields return N/A.
+# Use stitle instead and extract organism names via regex in pandas.
 COLUMNS = (
     "qseqid sseqid pident qcovs length mismatch gapopen "
-    "qstart qend sstart send evalue bitscore stitle sscinames"
+    "qstart qend sstart send evalue bitscore stitle"
 )
 HEADER_ROW = COLUMNS.replace(" ", "\t")
 
