@@ -32,7 +32,7 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 import re
 import sys
@@ -50,6 +50,66 @@ except ImportError:
     )
 
 from utils import base_parser
+
+# ── IUPAC ambiguity code → regex character class mapping ──────────────────────
+# Standard IUPAC-IUB nucleotide ambiguity codes (1970).
+# Python's re module treats every letter literally — "W" matches only the
+# character W, not [AT]. This table enables transparent auto-translation
+# so users can supply either IUPAC notation or regex directly.
+_IUPAC_TO_REGEX: dict[str, str] = {
+    "R": "[AG]",  # puRine
+    "Y": "[CT]",  # pYrimidine
+    "S": "[GC]",  # Strong (3 H-bonds)
+    "W": "[AT]",  # Weak (2 H-bonds)
+    "K": "[GT]",  # Keto
+    "M": "[AC]",  # aMino
+    "B": "[CGT]",  # not A  (B follows A in alphabet)
+    "D": "[AGT]",  # not C  (D follows C)
+    "H": "[ACT]",  # not G  (H follows G)
+    "V": "[ACG]",  # not T/U (V follows U)
+    "N": "[ACGT]",  # aNy base
+    "U": "T",  # Uracil → Thymine (RNA ↔ DNA equivalence)
+}
+
+
+def _translate_iupac(pattern: str) -> str:
+    """Translate IUPAC ambiguity codes in a motif string to regex equivalents.
+
+    Characters already inside regex brackets ``[...]`` are left untouched
+    so that user-defined character classes are preserved. Standard ACGT
+    bases and all regex metacharacters pass through unchanged.
+
+    Args:
+        pattern: Motif string — pure IUPAC, pure regex, or mixed.
+
+    Returns:
+        Regex-compatible pattern with all IUPAC codes expanded.
+
+    Examples::
+
+        "TATAWAW"          →  "TATA[AT]A[AT]"
+        "GCGCAG[CT]GWTAAAT" →  "GCGCAG[CT]G[AT]TAAAT"
+        "TATAAA"           →  "TATAAA"    (plain ACGT — unchanged)
+        "GCGCAG[CT]G[GT]T" →  "GCGCAG[CT]G[GT]T"  (brackets protected)
+    """
+    result = []
+    in_brackets = 0
+
+    for i, char in enumerate(pattern):
+        prev = pattern[i - 1] if i > 0 else ""
+
+        if char == "[" and prev != "\\":
+            in_brackets += 1
+            result.append(char)
+        elif char == "]" and in_brackets > 0 and prev != "\\":
+            in_brackets -= 1
+            result.append(char)
+        elif in_brackets == 0 and char.upper() in _IUPAC_TO_REGEX:
+            result.append(_IUPAC_TO_REGEX[char.upper()])
+        else:
+            result.append(char)
+
+    return "".join(result)
 
 
 def stream_regulon_hits(
@@ -75,23 +135,36 @@ def stream_regulon_hits(
         product, contig, gene strand, and a sorted list of
         (rel_pos, matched_seq, motif_strand) tuples.
     """
+    # Translate IUPAC ambiguity codes before compiling.
+    # Python's re module treats letters literally — "W" matches only the
+    # character W, not A or T. _translate_iupac() converts IUPAC codes to
+    # their regex equivalents while leaving regex metacharacters untouched.
+    translated_pattern = _translate_iupac(regex_pattern)
     try:
-        safe_pattern = re.compile(f"(?=({regex_pattern}))", re.IGNORECASE)
+        safe_pattern = re.compile(f"(?=({translated_pattern}))", re.IGNORECASE)
     except re.error as e:
-        raise ValueError(f"Invalid regex pattern: '{regex_pattern}'") from e
+        raise ValueError(
+            f"Invalid regex/IUPAC pattern: '{regex_pattern}' "
+            f"(translated: '{translated_pattern}')"
+        ) from e
 
     try:
         for record in SeqIO.parse(gbk_path, "genbank"):
             for feature in record.features:
                 if feature.type == "CDS":
 
-                    locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
-                    product = feature.qualifiers.get(
-                        "product", ["hypothetical protein"]
-                    )[0]
+                    # Use coordinate-based fallback for missing locus_tag.
+                    # "UNKNOWN" would be ambiguous in TSV output if multiple
+                    # CDS features lack annotation.
                     start = int(feature.location.start)
                     end = int(feature.location.end)
                     strand = feature.location.strand
+                    locus_tag = feature.qualifiers.get(
+                        "locus_tag", [f"UNKNOWN_CDS_{start}"]
+                    )[0]
+                    product = feature.qualifiers.get(
+                        "product", ["hypothetical protein"]
+                    )[0]
 
                     # Extract upstream with boundary tracking
                     if strand == 1:
@@ -124,19 +197,23 @@ def stream_regulon_hits(
                     # Reverse complement (template) strand scan
                     # The RC of the upstream sequence is scanned with the same pattern.
                     # The coordinate is mapped back to the forward-strand TSS origin:
-                    #   forward position of motif 5' end = len(upstream_seq) - true_match_end
-                    #   biological coord = -(actual_upstream - forward_position)
                     #
                     # IMPORTANT: Because we use a zero-width lookahead assertion (?=(...)),
                     # match.end() always equals match.start() — the outer match consumes
                     # zero characters. Using match.end() directly would place every RC hit
                     # at the wrong position (off by the motif length). We must calculate
                     # the true end from the captured group's length instead.
+                    #
+                    # Math note: len(upstream_seq) == actual_upstream always (the sequence
+                    # IS the extracted upstream window), so the formula simplifies:
+                    #   fwd_pos = len(upstream_seq) - true_match_end
+                    #   rel_pos = -(actual_upstream - fwd_pos)
+                    #           = -(actual_upstream - actual_upstream + true_match_end)
+                    #           = -true_match_end
                     rc_seq = str(Seq(upstream_seq).reverse_complement())
                     for match in safe_pattern.finditer(rc_seq):
                         true_match_end = match.start() + len(match.group(1))
-                        fwd_pos = len(upstream_seq) - true_match_end
-                        rel_pos = -(actual_upstream - fwd_pos)
+                        rel_pos = -true_match_end
                         matches.append((rel_pos, match.group(1), "-"))
 
                     if matches:
@@ -172,13 +249,27 @@ def main() -> None:
         "-m",
         "--motif",
         required=True,
-        help="Regex/IUPAC motif to search for on both strands",
+        help=(
+            "Motif to search for on both strands. Accepts three formats: "
+            "(1) Pure regex: 'TATA[AT][AT]'. "
+            "(2) IUPAC ambiguity codes: 'TATAWW' — automatically translated to "
+            "regex before scanning (W=[AT], R=[AG], Y=[CT], S=[GC], K=[GT], "
+            "M=[AC], B=[CGT], D=[AGT], H=[ACT], V=[ACG], N=[ACGT]). "
+            "(3) Mixed: 'GCGCAG[CT]GWTTAAAT' (brackets protect existing regex). "
+            "The translated pattern is printed to stderr for verification."
+        ),
     )
     args = parser.parse_args()
 
     print(f"[*] Scanning genome    : {args.input.name}", file=sys.stderr)
     print(f"[*] Upstream region    : {args.upstream}bp", file=sys.stderr)
-    print(f"[*] Motif              : {args.motif}", file=sys.stderr)
+    print(f"[*] Motif (input)      : {args.motif}", file=sys.stderr)
+    translated_motif = _translate_iupac(args.motif)
+    if translated_motif != args.motif:
+        print(
+            f"[*] Motif (translated) : {translated_motif}  ← IUPAC codes expanded",
+            file=sys.stderr,
+        )
     print(f"[*] Strands scanned    : Both (+) coding and (-) template", file=sys.stderr)
     print(f"[*] Position reference : TSS (negative = upstream of ATG)", file=sys.stderr)
 
