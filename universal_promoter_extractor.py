@@ -27,7 +27,15 @@ import argparse
 import re
 from pathlib import Path
 from typing import Iterator
-from Bio import SeqIO
+
+try:
+    from Bio import SeqIO
+    from Bio.Seq import Seq
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import stream_reference_files
 
 
@@ -164,6 +172,7 @@ def extract_by_loci(
     Args:
         gbk_path:    Path to the GenBank file to scan.
         locus_tags:  List of locus tags to extract upstream sequences for.
+                     Duplicates in the list are silently deduplicated.
         upstream_bp: Number of bases to extract upstream of the CDS start.
 
     Yields:
@@ -182,19 +191,58 @@ def extract_by_loci(
 
     Raises:
         ValueError: If the GenBank file cannot be parsed.
+
+    Notes:
+        - If any requested locus tag is not found in the file, a warning is
+          printed to stderr after scanning completes. This prevents the silent
+          data loss that would occur if a locus tag is misspelled or absent.
+        - Duplicate locus tags in the input list are silently deduplicated.
+        - If the same locus tag somehow appears on multiple features in the
+          GenBank file (malformed annotation), only the first occurrence is
+          yielded. A warning is printed for subsequent duplicates.
+        - Scanning stops early once all requested locus tags have been found,
+          avoiding unnecessary iteration over the rest of a large genome.
     """
-    target_set = set(locus_tags)
+    # Deduplicate input while preserving order
+    target_set: set[str] = set(locus_tags)  # all loci we care about
+    remaining: set[str] = set(locus_tags)  # loci still to find (drives early exit)
+    already_yielded: set[str] = set()  # guard against duplicate CDS features
     genome_label = gbk_path.stem
 
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
             for record in SeqIO.parse(handle, "genbank"):
+
+                # Early exit — all requested loci have been found
+                if not remaining:
+                    break
+
                 for feature in record.features:
+                    if not remaining:
+                        break  # also break the inner loop
+
                     if feature.type != "CDS":
                         continue
 
                     locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+
+                    # Check against target_set (not remaining) so the duplicate
+                    # guard below is reachable even after remaining.discard()
                     if locus_tag not in target_set:
+                        continue
+
+                    # Duplicate feature guard — catches malformed GenBank files
+                    # where the same locus tag appears on multiple CDS features.
+                    # Must check already_yielded BEFORE checking remaining, because
+                    # once a locus is found, remaining.discard() removes it and
+                    # checking `not in remaining` would silently skip the duplicate
+                    # without ever printing a warning.
+                    if locus_tag in already_yielded:
+                        print(
+                            f"      [!] Warning: {locus_tag} appears on multiple "
+                            f"features in {gbk_path.name} — skipping duplicate.",
+                            file=sys.stderr,
+                        )
                         continue
 
                     product = feature.qualifiers.get("product", ["Unknown product"])[0]
@@ -219,6 +267,9 @@ def extract_by_loci(
                             file=sys.stderr,
                         )
 
+                    already_yielded.add(locus_tag)
+                    remaining.discard(locus_tag)
+
                     yield (
                         record.id,
                         locus_tag,
@@ -231,6 +282,16 @@ def extract_by_loci(
 
     except Exception as e:
         raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
+
+    # Not-found warning — emitted AFTER the file is fully scanned
+    # so the caller doesn't silently get fewer results than expected
+    if remaining:
+        print(
+            f"\n      [!] Warning: {len(remaining)} locus tag(s) not found in "
+            f"{gbk_path.name}:\n"
+            + "\n".join(f"              - {tag}" for tag in sorted(remaining)),
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
