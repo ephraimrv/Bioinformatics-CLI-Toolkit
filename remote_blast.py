@@ -80,12 +80,13 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import argparse
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -347,44 +348,45 @@ def _blast_one(
 ) -> str:
     """Run BLAST on a single sequence and return the raw output string.
 
-    Passes the sequence to BLAST via standard input (stdin) rather than
-    writing to a temporary file. This is faster and avoids disk I/O.
+    Writes the sequence to a temporary file and passes it to BLAST via
+    -query. The stdin approach (-query -) is documented but unreliable
+    with -remote: BLAST+ does not consistently pipe stdin through to
+    NCBI's servers across all versions. Temp file is the safe approach.
 
     Args:
-        record:  The SeqRecord to query.
-        program: BLAST program name (blastp/blastn/blastx).
-        db:      Database name.
-        evalue:  E-value cutoff.
-        outfmt:  Output format number.
+        record:   The SeqRecord to query.
+        program:  BLAST program name (blastp/blastn/blastx).
+        db:       Database name.
+        evalue:   E-value cutoff.
+        outfmt:   Output format number.
         max_hits: Maximum hits to return.
 
     Returns:
         BLAST output as a string, or "" on error/timeout.
     """
-    # Convert the SeqRecord directly to FASTA format string in memory
-    fasta_str = record.format("fasta")
-
-    # Build command — outfmt 6 uses custom column string
-    fmt_arg = f"6 {COLUMNS}" if outfmt == 6 else str(outfmt)
-    cmd = [
-        program,
-        "-query",
-        "-",  # dash tells BLAST to read from stdin
-        "-db",
-        db,
-        "-remote",
-        "-outfmt",
-        fmt_arg,
-        "-evalue",
-        str(evalue),
-        "-max_target_seqs",
-        str(max_hits),
-    ]
-
+    tmp_path = Path(tempfile.mktemp(suffix=".fasta"))
     try:
+        with open(tmp_path, "w") as tmp:
+            SeqIO.write(record, tmp, "fasta")
+
+        fmt_arg = f"6 {COLUMNS}" if outfmt == 6 else str(outfmt)
+        cmd = [
+            program,
+            "-query",
+            str(tmp_path),
+            "-db",
+            db,
+            "-remote",
+            "-outfmt",
+            fmt_arg,
+            "-evalue",
+            str(evalue),
+            "-max_target_seqs",
+            str(max_hits),
+        ]
+
         result = subprocess.run(
             cmd,
-            input=fasta_str,  # pass FASTA string via stdin
             capture_output=True,
             text=True,
             timeout=300,  # 5 minutes — remote BLAST can be slow
@@ -413,6 +415,9 @@ def _blast_one(
             "    Install BLAST+ from:\n"
             "    https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/"
         )
+
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
