@@ -51,10 +51,12 @@ Output Format Reference:
         adjusted to the new local origin. Opens in Geneious, SnapGene,
         Artemis, and UGENE.
 
-Note:
-    This script is part of ongoing research and is associated with an upcoming
-    publication. Correct attribution is requested when used in derivative works.
-    Released under the MIT License. See LICENSE in the repository root.
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example:
     Check what sequences are in the file::

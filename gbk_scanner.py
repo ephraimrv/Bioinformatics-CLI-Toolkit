@@ -20,10 +20,12 @@ leftmost ``Keyword`` column runs key1 rows first, key2 rows next, and so on.
 A CDS feature that matches more than one keyword appears once per matching
 keyword so that no hit is missed.
 
-Note:
-    This script is part of ongoing research and is associated with an upcoming
-    publication. Correct attribution is requested when used in derivative works.
-    Released under the MIT License. See LICENSE in the repository root.
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example:
     Search a single NCBI GBFF file for bacteriocin genes::

@@ -20,14 +20,18 @@ Important:
     Use --raw to skip bacteriocin-specific core trimming and search using
     the full provided sequence. Required for non-bacteriocin targets.
 
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
+
 Example Usage:
     $ python3 ortholog_extractor.py -t target.faa -r references/ -o extracted_orthologs.faa
 
     # For non-bacteriocin proteins (housekeeping genes, TFs, kinases, etc.):
     $ python3 ortholog_extractor.py -t target.faa -r references/ --raw -o extracted_orthologs.faa
-
-License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
 """
 
 __author__ = "Jan Ephraim R. Vallente"

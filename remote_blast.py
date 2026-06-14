@@ -55,7 +55,11 @@ NCBI USAGE POLICY:
     4. Use --debug to print the exact BLAST command and all server messages.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     # Blast all sequences with defaults (blastp, nr, e-value 1e-10)

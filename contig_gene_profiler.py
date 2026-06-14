@@ -7,6 +7,13 @@ output formats (table, TSV) and can filter by feature type (CDS, rRNA, tRNA).
 
 Supports output with or without protein sequences for detailed downstream analysis.
 
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
+
 Example:
     Extract genes from contig_2 and display as table::
 
@@ -21,10 +28,6 @@ Example:
 
         python extract_contig_genes_v2.py C5_genome.gbff contig_1 \\
             --type rRNA --output rrna_genes.tsv
-
-
-License: MIT
-Note: This code is part of ongoing research. Associated with upcoming publication.
 """
 
 __author__ = "Jan Ephraim R. Vallente"
@@ -34,7 +37,14 @@ __version__ = "1.1.0"
 import sys
 import argparse
 import csv
-from Bio import SeqIO
+
+try:
+    from Bio import SeqIO
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 
 
 def extract_contig_genes(gbk_file, contig_name, feature_type="CDS"):

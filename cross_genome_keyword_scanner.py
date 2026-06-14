@@ -14,7 +14,11 @@ Output matrices are strictly sorted in this order (least to most conserved):
 It supports exporting results as both a tabular TSV matrix and a sequence-ready FASTA file.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     # Standard run: Search for 'bacteriocin', output TSV

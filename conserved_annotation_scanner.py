@@ -14,7 +14,11 @@ Output matrices are strictly sorted in this order (least to most conserved):
 It can output both TSV matrices and matching FASTA sequence files.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     # Standard run: Find genes conserved in at least 2 genomes, output TSV

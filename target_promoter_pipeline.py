@@ -34,8 +34,12 @@ EUKARYOTIC NOTE (FUTURE):
     the ATG, which is separated from the TSS by a 5' UTR and possibly introns.
     This is documented in extract_by_loci()'s docstring.
 
-LICENSE: MIT
-REPRODUCIBILITY: Associated with upcoming research (manuscript in preparation).
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 EXAMPLE USAGE:
     # Blast C5 bacteriocin genes against ATCC 8293
