@@ -8,7 +8,11 @@ single MEME-compatible FASTA file for motif discovery. Includes automatic
 deduplication to prevent skewed MEME statistical calculations.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example usage:
     $ python3 universal_promoter_extractor.py -i C5_prokka_result.gbk \
@@ -30,7 +34,6 @@ from typing import Iterator
 
 try:
     from Bio import SeqIO
-    from Bio.Seq import Seq
 except ImportError:
     sys.exit(
         "ERROR: Biopython is required but not installed.\n"
