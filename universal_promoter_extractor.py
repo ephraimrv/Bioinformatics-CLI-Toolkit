@@ -1,47 +1,25 @@
 """
 Universal Promoter Extractor
 
-A flexible pipeline asset for extracting upstream promoter regions from
-GenBank files. Supports three complementary extraction modes that can
-be used independently or combined in a single run:
-
-  1. Keyword mode (-k/--keywords):
-     Scans CDS /product annotations for matching keywords.
-     Use for broad discovery when you don't know exact locus tags.
-
-  2. Locus mode (-l/--loci):
-     Extracts upstream of specific, named locus tags (exact match).
-     Accepts one or more non-contiguous locus tags anywhere in the genome.
-     Use when you already know which genes you want.
-
-  3. Range mode (--range LOCUS_START LOCUS_END):
-     Extracts upstream of every CDS between two locus tags (inclusive),
-     ordered by genomic coordinate. Operates within a single contig.
-     Use for operons, genomic islands, or any contiguous gene cluster.
-
-All results are automatically deduplicated. Outputs a single MEME-compatible
-FASTA file. Truncation warnings are printed when a gene is too close to a
-contig boundary to provide the full upstream window.
+A flexible pipeline asset that dynamically scans either a single GenBank file
+or an entire directory for target genes using dynamic keyword matching.
+Extracts customizable upstream promoter regions and formats them into a
+single MEME-compatible FASTA file for motif discovery. Includes automatic
+deduplication to prevent skewed MEME statistical calculations.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example usage:
-    # Keyword mode (broad search)
-    $ python3 universal_promoter_extractor.py -i references/ \\
-      -o promoters.fasta -u 150 -k bacteriocin lactobin cerein
-
-    # Locus mode (specific, non-contiguous genes)
-    $ python3 universal_promoter_extractor.py -i C5_genome.gbk \\
-      -o promoters.fasta -u 150 -l ctg1_68 ctg1_50 ctg1_100
-
-    # Range mode (all genes between two locus tags)
-    $ python3 universal_promoter_extractor.py -i C5_genome.gbk \\
-      -o promoters.fasta -u 150 --range ctg1_50 ctg1_75
-
-    # Combined: keyword discovery + specific loci of interest
-    $ python3 universal_promoter_extractor.py -i references/ \\
-      -o promoters.fasta -u 150 -k bacteriocin -l ctg1_68 ctg1_50
+    $ python3 universal_promoter_extractor.py -i C5_prokka_result.gbk \
+      -o C5_promoters.fasta -u 150 -k bacteriocin lactobin cerein
+      
+    $ python3 universal_promoter_extractor.py -i references/ \
+      -o C5_promoters.fasta -u 150 -k bacteriocin lactobin cerein
 """
 
 __author__ = "Jan Ephraim R. Vallente"
@@ -50,6 +28,7 @@ __version__ = "1.2.0"
 
 import sys
 import argparse
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -63,72 +42,12 @@ except ImportError:
 from utils import stream_reference_files
 
 
-def _get_genome_label(record, file_stem: str = "") -> str:
-    """Extract organism/strain label from a BioPython SeqRecord.
-
-    Checks the source feature first (most reliable), then falls back to
-    record-level annotations. Appends strain only when not already embedded
-    in the organism string (NCBI often includes it in both fields).
-    For locally annotated genomes (e.g. Prokka drafts) where no organism
-    qualifier exists, falls back to the file stem name.
-
-    Args:
-        record:    BioPython SeqRecord object from SeqIO.parse().
-        file_stem: File name without extension — used as final fallback
-                   for locally assembled genomes lacking organism metadata.
-
-    Returns:
-        Label string such as "Lactobacillus mesenteroides C5",
-        "Homo sapiens", or the file stem as a last resort.
-    """
-    organism = ""
-    strain = ""
-
-    # /source feature is the most reliable location for organism and strain
-    for feature in record.features:
-        if feature.type == "source":
-            organism = feature.qualifiers.get("organism", [""])[0]
-            strain = feature.qualifiers.get("strain", [""])[0]
-            if not strain:
-                strain = feature.qualifiers.get("isolate", [""])[0]
-            break
-
-    # Fall back to record-level annotations
-    if not organism:
-        organism = record.annotations.get("organism", "")
-    if not strain:
-        strain = record.annotations.get("strain", "")
-
-    # Skip placeholder values produced by Prokka ("." or blank)
-    if organism in ("", "."):
-        organism = ""
-    if strain in ("", "."):
-        strain = ""
-
-    # Append strain only when not already in the organism string
-    if organism and strain and strain not in organism:
-        return f"{organism} {strain}".strip()
-    elif organism:
-        return organism.strip()
-    elif file_stem:
-        # Locally assembled / Prokka-annotated genomes have no organism qualifier
-        return file_stem
-    else:
-        return record.description.split(",")[0].strip() or "Unknown organism"
-
-
 def get_args() -> argparse.Namespace:
-    """Configures the CLI and returns parsed arguments.
-
-    At least one extraction mode (-k, -l, or --range) is required.
-    Multiple modes can be combined in a single run.
+    """
+    Configures the CLI, handles input validation, and returns parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description=(
-            "Extract upstream promoter regions from GenBank files. "
-            "Three modes available: keyword search (-k), specific locus tags (-l), "
-            "or coordinate range (--range). At least one mode is required."
-        ),
+        description="Extracts upstream regulatory regions based on keyword matching.",
     )
 
     parser.add_argument(
@@ -152,179 +71,197 @@ def get_args() -> argparse.Namespace:
         default=150,
         help="Number of upstream base pairs to extract (Default: 150)",
     )
-
-    modes = parser.add_argument_group(
-        "Extraction Modes",
-        "At least one mode is required. Multiple modes can be combined.",
-    )
-    modes.add_argument(
+    parser.add_argument(
         "-k",
         "--keywords",
         type=str,
         nargs="+",
-        default=None,
-        help=(
-            "Keyword mode: case-insensitive substring search in CDS /product annotations. "
-            "Example: -k bacteriocin lactobin cerein"
-        ),
-    )
-    modes.add_argument(
-        "-l",
-        "--loci",
-        type=str,
-        nargs="+",
-        default=None,
-        help=(
-            "Locus mode: extract upstream of specific locus tags (exact match). "
-            "Accepts one or more non-contiguous locus tags. "
-            "Example: -l ctg1_68 ctg1_50 ctg1_100"
-        ),
-    )
-    modes.add_argument(
-        "--range",
-        type=str,
-        nargs=2,
-        metavar=("LOCUS_START", "LOCUS_END"),
-        default=None,
-        help=(
-            "Range mode: extract upstream of ALL CDS features between two locus tags "
-            "(inclusive), sorted by genomic coordinate. Operates within a single contig. "
-            "Example: --range ctg1_50 ctg1_75"
-        ),
+        required=True,
+        help="List of keywords to search for in product names (e.g., bacteriocin lactobin cerein)",
     )
 
-    args = parser.parse_args()
-
-    if not args.keywords and not args.loci and not args.range:
-        parser.error(
-            "At least one extraction mode is required: "
-            "-k/--keywords, -l/--loci, or --range"
-        )
-
-    return args
+    return parser.parse_args()
 
 
-def _safe_locus_tag(feature) -> str:
-    """Return locus_tag, or a coordinate-based fallback if absent.
-
-    Using a plain "UNKNOWN" fallback collapses ALL unannotated CDS features
-    in a file into a single deduplication key, causing every one after the
-    first to be silently skipped. The coordinate-based fallback guarantees
-    each unannotated feature gets its own unique key.
-    """
-    start = int(feature.location.start)
-    fallback = f"UNKNOWN_CDS_{start}"
-    return feature.qualifiers.get("locus_tag", [fallback])[0]
-
-
-def _extract_upstream(record, feature, upstream_bp: int) -> tuple[str, int, int]:
-    """Extract upstream DNA sequence from a CDS feature.
-
-    Args:
-        record:      BioPython SeqRecord containing the feature.
-        feature:     BioPython SeqFeature (CDS type).
-        upstream_bp: Requested upstream window in bp.
-
-    Returns:
-        (upstream_sequence, actual_length_extracted, strand)
-        actual_length_extracted may be less than upstream_bp at contig edges.
-    """
-    start = int(feature.location.start)
-    end = int(feature.location.end)
-    strand = feature.location.strand
-
-    if strand == 1:
-        slice_start = max(0, start - upstream_bp)
-        actual_upstream = start - slice_start
-        upstream_seq = str(record.seq[slice_start:start])
-    else:
-        slice_end = min(len(record.seq), end + upstream_bp)
-        actual_upstream = slice_end - end
-        raw_seq = record.seq[end:slice_end]
-        upstream_seq = str(raw_seq.reverse_complement())
-
-    return upstream_seq, actual_upstream, strand
-
-
-def extract_by_keywords(
+def extract_regulatory_regions(
     gbk_path: Path, keywords: list[str], upstream_bp: int
-) -> Iterator[tuple[str, str, str, str, int, int]]:
-    """Extract upstream sequences for CDS features matching product keywords.
+) -> Iterator[tuple[str, str, str, str, int]]:
+    """
+    Scans a GenBank file for specific keywords in CDS annotations and extracts
+    the upstream DNA sequences (promoter regions) for MEME motif discovery.
+
+    Tracks actual extracted length separately from the requested window —
+    these differ when a gene is near a contig boundary. A warning is printed
+    to stderr when truncation occurs so the user can exclude or flag those
+    sequences before running MEME.
 
     Args:
-        gbk_path:    Path to GenBank file.
-        keywords:    Keywords matched against /product qualifier (case-insensitive).
-        upstream_bp: Upstream window in bp.
+        gbk_path:    Path object pointing to the target .gbk or .gbff file.
+        keywords:    A list of string keywords to match against /product annotation.
+        upstream_bp: The number of base pairs to extract upstream of the start codon.
 
     Yields:
-        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand, genome_label)
+        A 5-item tuple:
+        (Sequence ID, Locus Tag, Product Annotation, Upstream DNA Sequence,
+         Actual Extracted Length)
+
+    Raises:
+        ValueError: If the GenBank file is malformed, structurally invalid, or unreadable.
     """
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
             for record in SeqIO.parse(handle, "genbank"):
-                genome_label = _get_genome_label(record, gbk_path.stem)
                 for feature in record.features:
-                    if feature.type != "CDS":
-                        continue
-                    product = feature.qualifiers.get("product", [""])[0]
-                    if not any(k.lower() in product.lower() for k in keywords):
-                        continue
+                    if feature.type == "CDS":
 
-                    locus_tag = _safe_locus_tag(feature)
-                    upstream_seq, actual_upstream, strand = _extract_upstream(
-                        record, feature, upstream_bp
-                    )
+                        product = feature.qualifiers.get("product", [""])[0].lower()
 
-                    if actual_upstream < upstream_bp:
-                        print(
-                            f"      [!] Warning: {locus_tag} upstream truncated to "
-                            f"{actual_upstream}bp (contig boundary — requested {upstream_bp}bp).",
-                            file=sys.stderr,
-                        )
+                        if any(k.lower() in product for k in keywords):
+                            locus_tag = feature.qualifiers.get(
+                                "locus_tag", ["UNKNOWN"]
+                            )[0]
+                            start = int(feature.location.start)
+                            end = int(feature.location.end)
+                            strand = feature.location.strand
 
-                    yield record.id, locus_tag, product, upstream_seq, actual_upstream, strand, genome_label
+                            if strand == 1:
+                                slice_start = max(0, start - upstream_bp)
+                                actual_upstream = start - slice_start
+                                upstream_seq = str(record.seq[slice_start:start])
+                            else:
+                                slice_end = min(len(record.seq), end + upstream_bp)
+                                actual_upstream = slice_end - end
+                                raw_seq = record.seq[end:slice_end]
+                                upstream_seq = str(raw_seq.reverse_complement())
+
+                            # Warn if the upstream window was truncated by a contig boundary
+                            if actual_upstream < upstream_bp:
+                                print(
+                                    f"      [!] Warning: {locus_tag} upstream truncated to "
+                                    f"{actual_upstream}bp (contig boundary — requested {upstream_bp}bp).",
+                                    file=sys.stderr,
+                                )
+
+                            yield record.id, locus_tag, product, upstream_seq, actual_upstream
 
     except Exception as e:
         raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
 
 
 def extract_by_loci(
-    gbk_path: Path, locus_tags: list[str], upstream_bp: int
-) -> Iterator[tuple[str, str, str, str, int, int]]:
-    """Extract upstream sequences for specific locus tags (exact match).
+    gbk_path: Path,
+    locus_tags: list[str],
+    upstream_bp: int,
+) -> Iterator[tuple[str, str, str, str, int, int, str]]:
+    """Extract upstream regions for a specific list of locus tags.
 
-    Accepts one or more non-contiguous locus tags anywhere in the genome.
-    Reports any requested tags that were not found in the file.
+    This is the programmatic counterpart to ``extract_regulatory_regions``.
+    While ``extract_regulatory_regions`` searches by keyword, this function
+    searches by exact locus tag — making it suitable for programmatic pipelines
+    where the target loci have already been identified (e.g., by
+    ``gbk_ortholog_finder.find_orthologs()``).
+
+    Designed to be imported and called by bridge scripts such as
+    ``target_promoter_pipeline.py``. Does NOT require keyword input.
+
+    PROKARYOTIC NOTE:
+        In prokaryotes, the CDS start coordinate directly precedes the
+        promoter, so extracting upstream of the CDS start is correct.
+        For eukaryotic genomes, this logic would need updating to use
+        the ``mRNA`` feature start (= TSS) instead of the ``CDS`` start,
+        because eukaryotic CDS features begin at the ATG, which can be
+        separated from the TSS by a 5' UTR or introns.
 
     Args:
-        gbk_path:    Path to GenBank file.
-        locus_tags:  Locus tags to find and extract (exact match).
-        upstream_bp: Upstream window in bp.
+        gbk_path:    Path to the GenBank file to scan.
+        locus_tags:  List of locus tags to extract upstream sequences for.
+                     Duplicates in the list are silently deduplicated.
+        upstream_bp: Number of bases to extract upstream of the CDS start.
 
     Yields:
-        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand, genome_label)
+        A 7-item tuple:
+        (seq_id, locus_tag, product, upstream_seq, actual_upstream, strand, genome_label)
+
+        - seq_id:          Contig/record ID from the GenBank file
+        - locus_tag:       The matched locus tag
+        - product:         The /product annotation of the CDS
+        - upstream_seq:    The extracted upstream DNA sequence (strand-corrected)
+        - actual_upstream: Actual extracted length (may be < upstream_bp near
+                           contig boundaries)
+        - strand:          1 for forward strand, -1 for reverse strand
+        - genome_label:    Stem of the GenBank filename (useful for FASTA headers
+                           in multi-genome pipelines)
+
+    Raises:
+        ValueError: If the GenBank file cannot be parsed.
+
+    Notes:
+        - If any requested locus tag is not found in the file, a warning is
+          printed to stderr after scanning completes. This prevents the silent
+          data loss that would occur if a locus tag is misspelled or absent.
+        - Duplicate locus tags in the input list are silently deduplicated.
+        - If the same locus tag somehow appears on multiple features in the
+          GenBank file (malformed annotation), only the first occurrence is
+          yielded. A warning is printed for subsequent duplicates.
+        - Scanning stops early once all requested locus tags have been found,
+          avoiding unnecessary iteration over the rest of a large genome.
     """
-    target_set = set(locus_tags)
-    found = set()
+    # Deduplicate input while preserving order
+    target_set: set[str] = set(locus_tags)  # all loci we care about
+    remaining: set[str] = set(locus_tags)  # loci still to find (drives early exit)
+    already_yielded: set[str] = set()  # guard against duplicate CDS features
+    genome_label = gbk_path.stem
 
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
             for record in SeqIO.parse(handle, "genbank"):
-                genome_label = _get_genome_label(record, gbk_path.stem)
+
+                # Early exit — all requested loci have been found
+                if not remaining:
+                    break
+
                 for feature in record.features:
+                    if not remaining:
+                        break  # also break the inner loop
+
                     if feature.type != "CDS":
                         continue
-                    locus_tag = _safe_locus_tag(feature)
+
+                    locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+
+                    # Check against target_set (not remaining) so the duplicate
+                    # guard below is reachable even after remaining.discard()
                     if locus_tag not in target_set:
                         continue
 
-                    product = feature.qualifiers.get(
-                        "product", ["hypothetical protein"]
-                    )[0]
-                    upstream_seq, actual_upstream, strand = _extract_upstream(
-                        record, feature, upstream_bp
-                    )
-                    found.add(locus_tag)
+                    # Duplicate feature guard — catches malformed GenBank files
+                    # where the same locus tag appears on multiple CDS features.
+                    # Must check already_yielded BEFORE checking remaining, because
+                    # once a locus is found, remaining.discard() removes it and
+                    # checking `not in remaining` would silently skip the duplicate
+                    # without ever printing a warning.
+                    if locus_tag in already_yielded:
+                        print(
+                            f"      [!] Warning: {locus_tag} appears on multiple "
+                            f"features in {gbk_path.name} — skipping duplicate.",
+                            file=sys.stderr,
+                        )
+                        continue
+
+                    product = feature.qualifiers.get("product", ["Unknown product"])[0]
+                    start = int(feature.location.start)
+                    end = int(feature.location.end)
+                    strand = feature.location.strand
+
+                    if strand == 1:
+                        slice_start = max(0, start - upstream_bp)
+                        actual_upstream = start - slice_start
+                        upstream_seq = str(record.seq[slice_start:start])
+                    else:
+                        slice_end = min(len(record.seq), end + upstream_bp)
+                        actual_upstream = slice_end - end
+                        raw_seq = record.seq[end:slice_end]
+                        upstream_seq = str(raw_seq.reverse_complement())
 
                     if actual_upstream < upstream_bp:
                         print(
@@ -333,232 +270,104 @@ def extract_by_loci(
                             file=sys.stderr,
                         )
 
-                    yield record.id, locus_tag, product, upstream_seq, actual_upstream, strand, genome_label
+                    already_yielded.add(locus_tag)
+                    remaining.discard(locus_tag)
 
-        # Report any requested loci that were absent in this file
-        for missing in sorted(target_set - found):
-            print(
-                f"      [!] {missing} not found in {gbk_path.name}",
-                file=sys.stderr,
-            )
-
-    except Exception as e:
-        raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
-
-
-def extract_by_range(
-    gbk_path: Path, locus_start: str, locus_end: str, upstream_bp: int
-) -> Iterator[tuple[str, str, str, str, int, int]]:
-    """Extract upstream sequences for all CDS between two locus tags.
-
-    Collects all CDS features in the same contig, sorts by genomic coordinate,
-    then yields upstream sequences for every CDS in the inclusive range
-    [LOCUS_START, LOCUS_END]. Order of the two boundary tags does not matter.
-
-    Note:
-        Operates within a single contig. If the two boundary tags reside on
-        different contigs (fragmented assembly), the range cannot be resolved
-        and a warning is printed. This is intentional: cross-contig ranges have
-        no defined genomic order.
-
-    Args:
-        gbk_path:    Path to GenBank file.
-        locus_start: First boundary locus tag (inclusive).
-        locus_end:   Second boundary locus tag (inclusive).
-        upstream_bp: Upstream window in bp.
-
-    Yields:
-        (record_id, locus_tag, product, upstream_seq, actual_upstream_length, strand, genome_label)
-    """
-    found_start = False
-    found_end = False
-
-    try:
-        with open(gbk_path, "r", encoding="utf-8") as handle:
-            for record in SeqIO.parse(handle, "genbank"):
-                genome_label = _get_genome_label(record, gbk_path.stem)
-                # Collect all CDS in this record with coordinates and tags
-                all_cds = []
-                for feature in record.features:
-                    if feature.type != "CDS":
-                        continue
-                    tag = _safe_locus_tag(feature)
-                    all_cds.append((int(feature.location.start), tag, feature))
-
-                # Sort by genomic coordinate
-                all_cds.sort(key=lambda x: x[0])
-
-                # Find boundary indices in this record
-                start_idx = next(
-                    (i for i, (_, tag, _) in enumerate(all_cds) if tag == locus_start),
-                    None,
-                )
-                end_idx = next(
-                    (i for i, (_, tag, _) in enumerate(all_cds) if tag == locus_end),
-                    None,
-                )
-
-                if start_idx is None or end_idx is None:
-                    # Both boundaries not in this record — skip, try next record
-                    continue
-
-                found_start = True
-                found_end = True
-
-                # Allow user to specify boundaries in any order
-                lo, hi = sorted([start_idx, end_idx])
-                range_count = hi - lo + 1
-
-                print(
-                    f"      [Range] {locus_start} → {locus_end}: "
-                    f"{range_count} CDS features found in {record.id}",
-                    file=sys.stderr,
-                )
-
-                for _, tag, feature in all_cds[lo : hi + 1]:
-                    product = feature.qualifiers.get(
-                        "product", ["hypothetical protein"]
-                    )[0]
-                    upstream_seq, actual_upstream, strand = _extract_upstream(
-                        record, feature, upstream_bp
+                    yield (
+                        record.id,
+                        locus_tag,
+                        product,
+                        upstream_seq,
+                        actual_upstream,
+                        strand,
+                        genome_label,
                     )
 
-                    if actual_upstream < upstream_bp:
-                        print(
-                            f"      [!] Warning: {tag} upstream truncated to "
-                            f"{actual_upstream}bp (contig boundary — requested {upstream_bp}bp).",
-                            file=sys.stderr,
-                        )
-
-                    yield record.id, tag, product, upstream_seq, actual_upstream, strand, genome_label
-
-        if not found_start or not found_end:
-            print(
-                f"      [!] Warning: Range boundaries '{locus_start}' and '{locus_end}' "
-                f"were not both found in the same contig of {gbk_path.name}. "
-                f"Cross-contig ranges cannot be resolved.",
-                file=sys.stderr,
-            )
-
     except Exception as e:
         raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
+
+    # Not-found warning — emitted AFTER the file is fully scanned
+    # so the caller doesn't silently get fewer results than expected
+    if remaining:
+        print(
+            f"\n      [!] Warning: {len(remaining)} locus tag(s) not found in "
+            f"{gbk_path.name}:\n"
+            + "\n".join(f"              - {tag}" for tag in sorted(remaining)),
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
-    """Routes to extraction modes, deduplicates, and writes MEME-ready FASTA."""
+    """
+    The Wrapper: Coordinates file routing, handles cross-file deduplication,
+    sanitizes FASTA headers via Regex, and outputs MEME-ready sequences.
+    """
     args = get_args()
 
-    print(f"[*] Target          : {args.input}", file=sys.stderr)
-    print(f"[*] Upstream window : {args.upstream}bp", file=sys.stderr)
-    if args.keywords:
-        print(f"[*] Mode: Keywords  → {args.keywords}", file=sys.stderr)
-    if args.loci:
-        print(f"[*] Mode: Loci      → {args.loci}", file=sys.stderr)
-    if args.range:
-        print(
-            f"[*] Mode: Range     → {args.range[0]} to {args.range[1]}", file=sys.stderr
-        )
-    print(file=sys.stderr)
+    print(f"[*] Scanning target: {args.input}", file=sys.stderr)
+    print(f"[*] Upstream extraction window: {args.upstream} bp", file=sys.stderr)
+    print(f"[*] Active keywords: {args.keywords}\n", file=sys.stderr)
 
     hits_found = 0
     duplicates_skipped = 0
-    seen_loci: set[tuple[str, str]] = set()
+    seen_loci = set()
 
     try:
         with open(args.output, "w", encoding="utf-8") as out_file:
 
             for file_path in stream_reference_files(args.input):
 
-                # Skip nucleotide FASTA — no upstream DNA map available
-                if file_path.suffix.lower() in (".fasta", ".fa", ".fna"):
+                # Skip FASTA files because they don't contain upstream DNA maps
+                if file_path.suffix.lower() in (".fasta", ".fa", ".faa"):
                     print(
-                        f"  [!] Skipping {file_path.name}: nucleotide FASTA cannot "
-                        f"provide upstream DNA context.",
-                        file=sys.stderr,
-                    )
-                    continue
-
-                # Skip protein FASTA — no genomic coordinates
-                if file_path.suffix.lower() in (".faa",):
-                    print(
-                        f"  [!] Skipping {file_path.name}: protein FASTA has no "
-                        f"genomic coordinates.",
+                        f"  [!] Skipping {file_path.name}: Cannot extract upstream DNA from FASTA format.",
                         file=sys.stderr,
                     )
                     continue
 
                 print(f"  -> Parsing {file_path.name}...", file=sys.stderr)
 
-                # Build list of active iterators for this file
-                iterators = []
-                if args.keywords:
-                    iterators.append(
-                        extract_by_keywords(file_path, args.keywords, args.upstream)
-                    )
-                if args.loci:
-                    iterators.append(
-                        extract_by_loci(file_path, args.loci, args.upstream)
-                    )
-                if args.range:
-                    iterators.append(
-                        extract_by_range(
-                            file_path, args.range[0], args.range[1], args.upstream
-                        )
-                    )
+                for seq_id, locus, prod, seq, actual_up in extract_regulatory_regions(
+                    file_path, args.keywords, args.upstream
+                ):
+                    # File-aware Deduplication Engine
+                    dedup_key = (file_path.stem, locus)
+                    if dedup_key in seen_loci:
+                        duplicates_skipped += 1
+                        continue
 
-                for iterator in iterators:
-                    for (
-                        seq_id,
-                        locus,
-                        prod,
-                        seq,
-                        actual_up,
-                        strand,
-                        genome_label,
-                    ) in iterator:
+                    seen_loci.add(dedup_key)
+                    hits_found += 1
 
-                        # File-aware deduplication — unique per (file, locus_tag)
-                        dedup_key = (file_path.stem, locus)
-                        if dedup_key in seen_loci:
-                            duplicates_skipped += 1
-                            continue
+                    # replace all non-word/non-hyphen characters with underscores
+                    clean_prod = re.sub(r"[^\w\-]", "_", prod)
 
-                        seen_loci.add(dedup_key)
-                        hits_found += 1
+                    # Header uses actual extracted length — may differ from requested
+                    # upstream if gene is near a contig boundary
+                    fasta_header = f">{seq_id}_{locus}_{clean_prod}_up{actual_up}"
 
-                        strand_symbol = "+" if strand == 1 else "-"
+                    out_file.write(f"{fasta_header}\n{seq}\n")
+                    print(f"      [Hit] {locus} | {prod[:40]}...", file=sys.stderr)
 
-                        # NCBI-style FASTA header with | separators
-                        fasta_header = (
-                            f">{locus}"
-                            f" | {seq_id}"
-                            f" | {genome_label}"
-                            f" | {actual_up}bp upstream"
-                            f" | strand {strand_symbol}"
-                        )
-                        out_file.write(f"{fasta_header}\n{seq}\n")
-                        print(
-                            f"      [Hit] {locus} | {genome_label} | strand {strand_symbol} | {prod[:45]}",
-                            file=sys.stderr,
-                        )
-
-        print("\n" + "=" * 60, file=sys.stderr)
+        print("\n" + "=" * 50, file=sys.stderr)
         print(
-            f"[*] SUCCESS: {hits_found} unique upstream regions extracted.",
+            f"[*] SUCCESS: {hits_found} unique regulatory regions extracted.",
             file=sys.stderr,
         )
+
         if duplicates_skipped > 0:
             print(
-                f"[*] Note: {duplicates_skipped} duplicate(s) skipped.",
+                f"[*] WARNING: {duplicates_skipped} duplicate sequences were safely skipped.",
                 file=sys.stderr,
             )
-        print(f"[*] Output: {args.output.resolve()}", file=sys.stderr)
-        print("=" * 60, file=sys.stderr)
+
+        print(f"[*] Output saved to: {args.output.resolve()}", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
 
     except ValueError as e:
         sys.exit(f"\n[!] Pipeline Error: {e}")
     except KeyboardInterrupt:
-        sys.exit("\n[!] Pipeline interrupted by user.")
+        sys.exit("\n[!] Pipeline gracefully interrupted by user.")
 
 
 if __name__ == "__main__":

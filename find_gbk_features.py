@@ -34,10 +34,12 @@ When ``-o`` is specified, results are written as a TSV file instead of text.
 The TSV columns vary by mode and include verbose annotation fields when ``-v``
 is also used. Without ``-o``, all output is formatted text to the terminal.
 
-Note:
-    This script is part of ongoing research and is associated with an upcoming
-    publication. Correct attribution is requested when used in derivative works.
-    Released under the MIT License. See the LICENSE file in the repository root.
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     Display the sequences contained in the file::

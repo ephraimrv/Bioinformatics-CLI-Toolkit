@@ -27,7 +27,11 @@ Important:
     without six-frame translation.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     # Interactive scan against a directory of reference genomes

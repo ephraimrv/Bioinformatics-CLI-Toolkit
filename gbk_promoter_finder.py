@@ -8,7 +8,11 @@ orientation to extract the correct upstream sequence (applying reverse
 complementation where necessary), and scans the region for specific motif hits.
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     $ python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta

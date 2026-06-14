@@ -22,7 +22,11 @@ Note on scope:
     model, MEME-style OOPS model).
 
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     $ python3 alignment_conservation_profiler.py -i alignment.fasta -o profile_matrix.tsv

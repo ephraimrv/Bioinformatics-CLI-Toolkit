@@ -1,4 +1,4 @@
-"""
+r"""
 Remote BLAST Runner
 
 Automates NCBI remote BLAST searches over sequences in a FASTA file.
@@ -18,15 +18,14 @@ DEFAULT OUTPUT COLUMNS (outfmt 6 custom):
     - stitle: full subject description with organism in brackets
       Example: "WP_014324148.1 Blp family class II bacteriocin [Leuconostoc mesenteroides]"
 
-CRITICAL NOTE — Taxonomy Fields (sscinames, scomnames) with `-remote`:
+CRITICAL NOTE — Taxonomy Fields (sscinames, scomnames) with -remote:
     Taxonomic columns (sscinames, scomnames) require a local Taxonomy Database
-    (taxdb) to work. When using `-remote`, NCBI servers return only alignment
+    (taxdb) to work. When using -remote, NCBI servers return only alignment
     data, not taxonomy lookups. Without local taxdb files, these columns return N/A.
 
     WORKAROUND: Extract organism name from stitle using regex in Python:
 
         import pandas as pd
-        import re
 
         df = pd.read_csv('output.blast.tsv', sep='\t')
         df['organism'] = df['stitle'].str.extract(r'\[(.*?)\]', expand=False)
@@ -35,7 +34,7 @@ CRITICAL NOTE — Taxonomy Fields (sscinames, scomnames) with `-remote`:
     This extracts the organism name from the stitle brackets reliably.
 
 SEQUENCE SELECTION MODES:
-    (none)                      Blast every sequence in the file (default)
+    (none)                         Blast every sequence in the file (default)
     --range LOCUS_START LOCUS_END  Blast a contiguous slice in file order
     --pick LOCUS_TAG [...]         Blast specific sequences by ID
     --list                         Preview all IDs in the file and exit
@@ -46,8 +45,21 @@ NCBI USAGE POLICY:
     For large batches (>100 sequences), consider downloading a local BLAST
     database: https://ftp.ncbi.nlm.nih.gov/blast/db/
 
+    If results come back empty unexpectedly:
+    1. NCBI rate limiting — you may have sent too many requests. Wait 30-60
+       minutes before retrying.
+    2. Timeout — refseq_protein and swissprot are slower than nr via remote.
+       Increase timeout with --timeout (default: 600s).
+    3. No hits — the sequence may genuinely have no hits in that database
+       above your e-value threshold. Try a less stringent -e value.
+    4. Use --debug to print the exact BLAST command and all server messages.
+
 License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
 
 Example Usage:
     # Blast all sequences with defaults (blastp, nr, e-value 1e-10)
@@ -76,11 +88,17 @@ Example Usage:
 
     # Protein Data Bank
     $ python3 remote_blast.py -i proteins.faa --db pdb -e 1e-10
+
+    # Debug mode — prints exact command, NCBI messages, raw output length
+    $ python3 remote_blast.py -i proteins.faa --debug
+
+    # Increase timeout for slow databases (default: 600s)
+    $ python3 remote_blast.py -i proteins.faa --db refseq_protein --timeout 900
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 import argparse
 import shutil
@@ -118,7 +136,8 @@ DEFAULT_DB: dict[str, str] = {
     "blastx": "nr",
 }
 
-NCBI_MIN_DELAY = 5  # seconds between requests (NCBI etiquette: ≤3 requests/sec)
+NCBI_MIN_DELAY = 5  # seconds between requests (NCBI etiquette: <=3 requests/sec)
+DEFAULT_TIMEOUT = 600  # seconds — 10 minutes (remote BLAST can be slow)
 
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
@@ -134,15 +153,16 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 sequence selection (mutually exclusive — pick one or use none for all):
-  --range START END   e.g. --range 1 20  → sequences 1 through 20
-  --pick  N [N ...]   e.g. --pick 1 36 45 → sequences 1, 36, and 45
+  --range LOCUS_START LOCUS_END  e.g. --range ctg1_1 ctg1_20
+  --pick  LOCUS_TAG [...]        e.g. --pick ctg1_1 ctg1_36 ctg1_45
 
 examples:
   python3 remote_blast.py -i proteins.faa
-  python3 remote_blast.py -i proteins.faa -p blastp --range 1 20 -e 1e-10
-  python3 remote_blast.py -i proteins.faa -p blastp --pick 1 36 45
+  python3 remote_blast.py -i proteins.faa -p blastp --range ctg1_1 ctg1_20 -e 1e-5
+  python3 remote_blast.py -i proteins.faa -p blastp --pick ctg1_1 ctg1_36 ctg1_45
   python3 remote_blast.py -i genome.fna -p blastn
   python3 remote_blast.py -i contigs.fna -p blastx --db nr --max-hits 100
+  python3 remote_blast.py -i proteins.faa --debug
         """,
     )
 
@@ -216,6 +236,17 @@ examples:
         help="Maximum number of hits to return per sequence. Default: 100",
     )
     parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        metavar="SEC",
+        help=(
+            f"Seconds to wait for each BLAST request before giving up. "
+            f"Default: {DEFAULT_TIMEOUT}s. Increase for slow databases "
+            f"(refseq_protein, swissprot)."
+        ),
+    )
+    parser.add_argument(
         "--delay",
         type=float,
         default=NCBI_MIN_DELAY,
@@ -225,7 +256,15 @@ examples:
             f"Default: {NCBI_MIN_DELAY} (NCBI usage policy)."
         ),
     )
-
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Print the exact BLAST command, all NCBI server messages (stderr), "
+            "and raw output length for each sequence. Use when results are "
+            "unexpectedly empty to diagnose rate limiting or server errors."
+        ),
+    )
     parser.add_argument(
         "--list",
         action="store_true",
@@ -270,48 +309,25 @@ examples:
 def _select_sequences(
     records: list[SeqRecord], args: argparse.Namespace
 ) -> list[tuple[int, SeqRecord]]:
-    """Return (1-indexed position, record) pairs based on the selection mode.
-
-    Sequences are identified by locus tag (the sequence ID from the FASTA
-    header — the first word after '>'), not by positional index. This means
-    the user never has to count sequences in the file manually.
-
-    For --range LOCUS_START LOCUS_END: finds both tags in the file, then
-    selects everything between them (inclusive) in file order.
-
-    For --pick LOCUS_TAG [...]: selects each named sequence in the order
-    the tags were given on the command line.
-
-    Args:
-        records: All SeqRecord objects parsed from the input file.
-        args:    Parsed arguments (may contain .range or .pick).
-
-    Returns:
-        Ordered list of (seq_number, SeqRecord) tuples to blast.
-    """
-    # Build lookup: locus_tag → 0-indexed position in file
+    """Return (1-indexed position, record) pairs based on the selection mode."""
     id_to_idx: dict[str, int] = {rec.id: i for i, rec in enumerate(records)}
 
     if args.range:
         start_tag, end_tag = args.range
-
         missing = [t for t in (start_tag, end_tag) if t not in id_to_idx]
         if missing:
             sys.exit(
                 f"[!] Locus tag(s) not found in FASTA: {missing}\n"
                 f"    Run with --list to see all available IDs."
             )
-
         i = id_to_idx[start_tag]
         j = id_to_idx[end_tag]
-
         if i > j:
             sys.exit(
                 f"[!] '{start_tag}' (position {i + 1}) comes AFTER "
                 f"'{end_tag}' (position {j + 1}) in the file.\n"
                 f"    Swap the arguments or check --list for the correct order."
             )
-
         return [(idx + 1, records[idx]) for idx in range(i, j + 1)]
 
     if args.pick:
@@ -321,7 +337,6 @@ def _select_sequences(
                 f"[!] Locus tag(s) not found in FASTA: {missing}\n"
                 f"    Run with --list to see all available IDs."
             )
-
         seen: set[str] = set()
         selected = []
         for tag in args.pick:
@@ -331,7 +346,6 @@ def _select_sequences(
                 seen.add(tag)
         return selected
 
-    # Default: all sequences
     return [(i + 1, rec) for i, rec in enumerate(records)]
 
 
@@ -345,6 +359,8 @@ def _blast_one(
     evalue: float,
     outfmt: int,
     max_hits: int,
+    timeout: int,
+    debug: bool,
 ) -> str:
     """Run BLAST on a single sequence and return the raw output string.
 
@@ -360,20 +376,24 @@ def _blast_one(
         evalue:   E-value cutoff.
         outfmt:   Output format number.
         max_hits: Maximum hits to return.
+        timeout:  Seconds before giving up on this request.
+        debug:    If True, print command and all NCBI messages to stderr.
 
     Returns:
         BLAST output as a string, or "" on error/timeout.
     """
-    tmp_path = Path(tempfile.mktemp(suffix=".fasta"))
+    tmp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False)
+    tmp_path = tmp_file.name
+
     try:
-        with open(tmp_path, "w") as tmp:
-            SeqIO.write(record, tmp, "fasta")
+        SeqIO.write(record, tmp_file, "fasta")
+        tmp_file.close()  # must close before BLAST opens it (critical on WSL2)
 
         fmt_arg = f"6 {COLUMNS}" if outfmt == 6 else str(outfmt)
         cmd = [
             program,
             "-query",
-            str(tmp_path),
+            tmp_path,
             "-db",
             db,
             "-remote",
@@ -385,17 +405,57 @@ def _blast_one(
             str(max_hits),
         ]
 
+        if debug:
+            print(
+                f"\n    [DEBUG] Command: {' '.join(cmd)}",
+                file=sys.stderr,
+            )
+
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minutes — remote BLAST can be slow
+            timeout=timeout,
         )
+
+        # Always print NCBI's stderr messages in debug mode.
+        # In normal mode, print only if non-empty — NCBI uses stderr for
+        # rate limiting warnings and other server messages that explain
+        # why results may be empty even with returncode 0.
+        if result.stderr.strip():
+            if debug:
+                print(
+                    f"    [DEBUG] NCBI messages:\n"
+                    + "\n".join(
+                        f"            {line}"
+                        for line in result.stderr.strip().splitlines()
+                    ),
+                    file=sys.stderr,
+                )
+            else:
+                # Always show server messages — they explain empty results
+                print(
+                    f"\n    [!] NCBI server message for {record.id}:\n"
+                    + "\n".join(
+                        f"        {line}" for line in result.stderr.strip().splitlines()
+                    ),
+                    file=sys.stderr,
+                )
+
+        if debug:
+            print(
+                f"    [DEBUG] Return code: {result.returncode}",
+                file=sys.stderr,
+            )
+            print(
+                f"    [DEBUG] stdout length: {len(result.stdout)} chars",
+                file=sys.stderr,
+            )
 
         if result.returncode != 0:
             print(
-                f"\n    [!] BLAST error for {record.id}:\n"
-                f"        {result.stderr.strip()}",
+                f"\n    [!] BLAST failed (returncode {result.returncode}) "
+                f"for {record.id}.",
                 file=sys.stderr,
             )
             return ""
@@ -404,7 +464,11 @@ def _blast_one(
 
     except subprocess.TimeoutExpired:
         print(
-            f"\n    [!] Timeout (5 min) for {record.id} — skipping.",
+            f"\n    [!] Timeout ({timeout}s) for {record.id} — skipping.\n"
+            f"        Increase with --timeout (current: {timeout}s).\n"
+            f"        If using refseq_protein or swissprot, try --db nr first.\n"
+            f"        If using nr and still timing out, NCBI may be rate-limiting\n"
+            f"        your IP. Wait 30-60 minutes and retry.",
             file=sys.stderr,
         )
         return ""
@@ -417,7 +481,7 @@ def _blast_one(
         )
 
     finally:
-        tmp_path.unlink(missing_ok=True)
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -427,7 +491,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # ── Fail-fast: check BLAST is installed ───────────────────────────────────
+    # ── Fail-fast: check BLAST is installed before doing anything else ─────────
     if shutil.which(args.program) is None:
         sys.exit(
             f"\n[!] ERROR: '{args.program}' is not installed or not in your PATH.\n"
@@ -442,11 +506,14 @@ def main() -> None:
     output: Path = args.output or args.input.with_suffix(".blast.tsv")
     db: str = args.db or DEFAULT_DB[args.program]
 
+    print(f"[*] Version       : {__version__}", file=sys.stderr)
     print(f"[*] Program       : {args.program}", file=sys.stderr)
     print(f"[*] Database      : {db} (remote)", file=sys.stderr)
     print(f"[*] E-value       : {args.evalue}", file=sys.stderr)
     print(f"[*] Output format : {args.outfmt}", file=sys.stderr)
     print(f"[*] Max hits/seq  : {args.max_hits}", file=sys.stderr)
+    print(f"[*] Timeout/seq   : {args.timeout}s", file=sys.stderr)
+    print(f"[*] Debug mode    : {'ON' if args.debug else 'off'}", file=sys.stderr)
     print(f"[*] Input         : {args.input}", file=sys.stderr)
     print(f"[*] Output        : {output}", file=sys.stderr)
 
@@ -460,7 +527,6 @@ def main() -> None:
     # ── --list: print all IDs and exit ────────────────────────────────────────
     if args.list:
         print(f"\nSequences in {args.input.name} ({len(records)} total):\n")
-        # Strip the ID prefix from description (BioPython includes it)
         for i, rec in enumerate(records, 1):
             desc = rec.description[len(rec.id) :].strip()
             desc_col = f"  {desc[:60]}" if desc else ""
@@ -475,7 +541,7 @@ def main() -> None:
     selected = _select_sequences(records, args)
 
     if args.range:
-        mode = f"range [{args.range[0]} → {args.range[1]}]"
+        mode = f"range [{args.range[0]} -> {args.range[1]}]"
     elif args.pick:
         mode = f"pick {args.pick}"
     else:
@@ -493,14 +559,13 @@ def main() -> None:
 
     # ── BLAST loop ────────────────────────────────────────────────────────────
     print(
-        f"\n[*] Starting remote BLAST " f"({args.delay}s delay between requests)...",
+        f"\n[*] Starting remote BLAST ({args.delay}s delay between requests)...",
         file=sys.stderr,
     )
 
     hits_total = 0
 
     with open(output, "w", encoding="utf-8") as out:
-        # Write header only for tabular outfmt 6
         if args.outfmt == 6:
             out.write(HEADER_ROW + "\n")
 
@@ -519,23 +584,25 @@ def main() -> None:
                 args.evalue,
                 args.outfmt,
                 args.max_hits,
+                args.timeout,
+                args.debug,
             )
 
             if blast_output.strip():
                 out.write(blast_output)
-                out.flush()  # persist each result as it arrives
+                out.flush()
                 n_hits = len([l for l in blast_output.strip().splitlines() if l])
                 hits_total += n_hits
-                print(f"      → {n_hits} hit(s)", file=sys.stderr)
+                print(f"      -> {n_hits} hit(s)", file=sys.stderr)
             else:
-                print(f"      → No hits above threshold.", file=sys.stderr)
-
-            # NCBI rate limiting — no delay needed after the last sequence
-            if idx < len(selected) - 1:
                 print(
-                    f"      Waiting {args.delay}s...",
+                    f"      -> No hits. "
+                    f"(Run with --debug to see what NCBI returned.)",
                     file=sys.stderr,
                 )
+
+            if idx < len(selected) - 1:
+                print(f"      Waiting {args.delay}s...", file=sys.stderr)
                 time.sleep(args.delay)
 
     # ── Summary ───────────────────────────────────────────────────────────────
@@ -557,4 +624,4 @@ if __name__ == "__main__":
             "    Partial results may have been written to the output file.",
             file=sys.stderr,
         )
-        sys.exit(130)  # standard exit code for SIGINT
+        sys.exit(130)
