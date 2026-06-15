@@ -34,6 +34,16 @@ ORGANISM SUPPORT:
         have annotations). Coordinate extraction uses mRNA features (which
         have correct TSS coordinates but often lack /product).
 
+OUTPUTS:
+    <stem>.fasta       MEME-ready upstream sequences (wrapped at 60 chars).
+    <stem>.tsv         Extraction results table: one row per upstream region,
+                       with columns for locus_tag, genome, contig, product,
+                       strand, and upstream length.
+    <stem>.hits.tsv    Ortholog alignment hits table: one row per hit from
+                       Step 2, with query/ref locus, identity, alignment
+                       length, and source genome. Full version of the
+                       truncated terminal display.
+
 WHY THIS REPLACES homology_extractor.py:
     The old script used:
         if core_peptide in translation:
@@ -80,7 +90,7 @@ Example usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import sys
 import argparse
@@ -163,8 +173,10 @@ examples:
         default=None,
         metavar="FASTA",
         help=(
-            "Output FASTA file for MEME motif discovery. "
-            "Default: targeted_promoters.fasta"
+            "Output FASTA file path. "
+            "If omitted, saves to 'targeted_promoters.fasta' in the current directory. "
+            "Two TSV files are automatically generated alongside it: "
+            "<stem>.tsv (extraction results) and <stem>.hits.tsv (ortholog hits)."
         ),
     )
     parser.add_argument(
@@ -247,7 +259,13 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    # Maximum number of hits/loci printed to the terminal.
+    # Beyond this, a truncation message directs the user to the TSV.
+    _MAX_DISPLAY = 20
+
     output = args.output or Path("targeted_promoters.fasta")
+    tsv_output = output.with_suffix(".tsv")
+    hits_tsv = output.with_stem(output.stem + ".hits").with_suffix(".tsv")
 
     # Validate inputs
     if not args.query.exists():
@@ -260,7 +278,9 @@ def main() -> None:
     print("=" * 60, file=sys.stderr)
     print(f"  Query           : {args.query.name}", file=sys.stderr)
     print(f"  Reference       : {args.reference}", file=sys.stderr)
-    print(f"  Output          : {output}", file=sys.stderr)
+    print(f"  FASTA output    : {output}", file=sys.stderr)
+    print(f"  TSV output      : {tsv_output}", file=sys.stderr)
+    print(f"  Hits TSV        : {hits_tsv}", file=sys.stderr)
     print(f"  Upstream        : {args.upstream}bp", file=sys.stderr)
     print(f"  Min identity    : {args.identity * 100:.0f}%", file=sys.stderr)
     print(f"  Min coverage    : {args.coverage * 100:.0f}% (min mode)", file=sys.stderr)
@@ -350,20 +370,80 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # Report what was found
-    for hit in sorted(hits, key=lambda h: (-h.identity, h.ref_locus)):
+    # Write all hits to .hits.tsv — full record for downstream review.
+    # Terminal display is truncated to _MAX_DISPLAY; TSV always has everything.
+    HITS_TSV_HEADER = "\t".join(
+        [
+            "query_locus",
+            "query_product",
+            "ref_locus",
+            "ref_product",
+            "identity_pct",
+            "alignment_length",
+            "mismatches",
+            "query_length",
+            "ref_length",
+            "ref_file",
+        ]
+    )
+    sorted_hits = sorted(hits, key=lambda h: (-h.identity, h.ref_locus))
+    with open(hits_tsv, "w", encoding="utf-8") as hf:
+        hf.write(HITS_TSV_HEADER + "\n")
+        for hit in sorted_hits:
+            hf.write(
+                "\t".join(
+                    [
+                        hit.query_locus,
+                        hit.query_product,
+                        hit.ref_locus,
+                        hit.ref_product,
+                        f"{hit.identity * 100:.1f}",
+                        str(hit.alignment_length),
+                        str(hit.mismatches),
+                        str(hit.query_length),
+                        str(hit.ref_length),
+                        hit.ref_file,
+                    ]
+                )
+                + "\n"
+            )
+
+    # Terminal: show first _MAX_DISPLAY hits, then a truncation notice
+    for hit in sorted_hits[:_MAX_DISPLAY]:
         print(
             f"      {hit.ref_locus:<20} {hit.identity*100:.1f}% identity  "
             f"{hit.ref_product[:45]}",
             file=sys.stderr,
         )
+    if len(sorted_hits) > _MAX_DISPLAY:
+        hidden = len(sorted_hits) - _MAX_DISPLAY
+        print(
+            f"      ... and {hidden} more hit(s) not shown. "
+            f"See {hits_tsv.name} for the full list.",
+            file=sys.stderr,
+        )
 
-    # Deduplicate locus tags (one query can hit the same ref locus multiple times)
-    target_loci = list(dict.fromkeys(hit.ref_locus for hit in hits))
+    # Deduplicate reference locus tags.
+    # The same ref_locus can appear in multiple hits when more than one query
+    # protein matches it (paralogs in the query genome). We only need to extract
+    # upstream of each reference locus once, regardless of how many query
+    # proteins pointed to it.
+    target_loci = list(dict.fromkeys(hit.ref_locus for hit in sorted_hits))
     print(
-        f"\n    {len(target_loci)} unique locus tag(s) to extract: {target_loci}",
+        f"\n    {len(target_loci)} unique reference locus tag(s) to extract "
+        f"({len(hits) - len(target_loci)} redundant hit(s) collapsed):",
         file=sys.stderr,
     )
+
+    # Terminal: show first _MAX_DISPLAY loci, then a truncation notice
+    for tag in target_loci[:_MAX_DISPLAY]:
+        print(f"      {tag}", file=sys.stderr)
+    if len(target_loci) > _MAX_DISPLAY:
+        hidden = len(target_loci) - _MAX_DISPLAY
+        print(
+            f"      ... and {hidden} more. " f"See {hits_tsv.name} for the full list.",
+            file=sys.stderr,
+        )
 
     # ── Step 3: Extract upstream regions ─────────────────────────────────────
     print(
@@ -371,16 +451,7 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # ── Step 3: Extract upstream regions ─────────────────────────────────────
-    print(
-        f"\n[Step 3] Extracting {args.upstream}bp upstream of identified loci...",
-        file=sys.stderr,
-    )
-
-    # ref_files already resolved in Step 2 — reused here directly.
-    # TSV output: derived from FASTA output path unless explicitly set.
-    tsv_output = output.with_suffix(".tsv")
-
+    # tsv_output and hits_tsv resolved at top of main() — reused here.
     extracted_count = 0
     found_loci: set[str] = set()  # tracks which loci were found across ALL files
 
@@ -480,6 +551,7 @@ def main() -> None:
     print(f"  Regions extracted  : {extracted_count}", file=sys.stderr)
     print(f"  FASTA written to   : {output.resolve()}", file=sys.stderr)
     print(f"  TSV written to     : {tsv_output.resolve()}", file=sys.stderr)
+    print(f"  Hits TSV written   : {hits_tsv.resolve()}", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
 
     if extracted_count == 0:
