@@ -1,24 +1,54 @@
 """
+Cross-Genome Keyword Conservation Scanner
+
 Scans multiple GenBank reference genomes for specific annotation keywords.
-
 Filters and returns only the genes (and their protein sequences) that are
-conserved across a minimum number of different genomes. This is used to
-empirically verify the presence of specific protein families (e.g., 'lactobin',
-'cerein') across a comparative genomic dataset.
+conserved across a minimum number of different genomes. Used to empirically
+verify the presence of specific protein families (e.g., 'lactobin', 'cerein')
+across a comparative genomic dataset.
 
-Output matrices are strictly sorted in this order (least to most conserved):
-1. Number of genomes found (Ascending)
-2. Total physical copies found across all genomes (Ascending)
-3. Alphabetical by keyword/product name (Ascending)
+Supports exporting results as both a tabular TSV matrix and a FASTA file.
 
-It supports exporting results as both a tabular TSV matrix and a sequence-ready FASTA file.
+OUTPUT SORT ORDER (most to least conserved):
+    1. Number of genomes found        (Descending — most conserved first)
+    2. Total physical copies          (Descending — single-copy before multicopy)
+    3. Alphabetical by keyword        (Ascending)
+
+    Descending Tier 1 ensures highly conserved hits appear at the TOP of the
+    output matrix. Descending Tier 2 prevents copy-number inflation artifacts
+    (a gene duplicated 12 times in one genome ranks BELOW a truly universal
+    single-copy gene with the same genome count).
+
+FASTA HEADER FORMAT:
+    >{keyword}|{genome_file}|{contig_id}|{locus_tag}|{product}
+
+    The keyword is prepended to every FASTA header. This guarantees unique
+    headers when the same gene matches multiple keywords (e.g., a "nisin-
+    controlled class II bacteriocin" matching both "nisin" and "bacteriocin").
+    Without keyword prefixing, downstream alignment tools (MAFFT, Clustal
+    Omega, IQ-TREE) would receive identical non-unique record headers and
+    either crash or produce corrupt output.
+
+PSEUDOGENE HANDLING:
+    CDS features without a /translation qualifier (pseudogenes, frameshifted
+    genes) are stored with an empty string rather than None. The TSV
+    Protein_Sequence column will be blank for these entries, preventing the
+    literal string "None" from being written and misinterpreted as a peptide
+    sequence by downstream tools.
+
+FILE KEY SAFETY:
+    Genomes are tracked by their path relative to the input directory, not
+    by filename alone. This prevents two files named genome.gbk in different
+    subdirectories (e.g., wild_type/genome.gbk and mutant/genome.gbk) from
+    being merged into the same tracking entry, which would produce silently
+    wrong conservation counts.
 
 License: MIT
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
+Note:
+    This module is part of ongoing research and is associated with an upcoming
+    publication. Please cite appropriately when used in derivative works.
+    See LICENSE file in the repository root for full license terms.
 
 Example Usage:
     # Standard run: Search for 'bacteriocin', output TSV
@@ -33,10 +63,11 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import sys
 import argparse
+from contextlib import ExitStack
 from pathlib import Path
 from collections import defaultdict
 
@@ -58,6 +89,9 @@ except ImportError:
     tqdm = lambda x, **kwargs: x
 
 
+# ── GenBank parsing ────────────────────────────────────────────────────────────
+
+
 def scan_file_for_keywords(
     file_path: Path, keywords: list[str]
 ) -> dict[str, list[dict]]:
@@ -65,12 +99,16 @@ def scan_file_for_keywords(
 
     Matching is case-insensitive substring search across the product, gene,
     and note qualifiers combined. A single CDS can match multiple keywords
-    independently.
+    independently — it will appear in each matching keyword's result list.
 
     Note:
         Substring matching means short keywords may over-match. For example,
         searching 'cin' will match 'bacteriocin', 'nisin', 'colistin', etc.
         Use specific keywords (e.g., 'bacteriocin' not 'cin') for clean results.
+
+        CDS features without a /translation qualifier (pseudogenes) are stored
+        with an empty string rather than None to prevent "None" appearing as a
+        literal value in TSV output.
 
         Parsing errors (OSError, ValueError) are caught internally and logged
         to stderr, allowing batch scanning to continue.
@@ -83,7 +121,7 @@ def scan_file_for_keywords(
         A dictionary mapping each matched keyword to a list of feature metadata.
     """
     lower_keywords = [k.lower() for k in keywords]
-    hits = defaultdict(list)
+    hits: dict[str, list[dict]] = defaultdict(list)
 
     try:
         if file_path.suffix.lower() not in (".gbk", ".gbff"):
@@ -107,9 +145,14 @@ def scan_file_for_keywords(
                             locus_tag = feature.qualifiers.get(
                                 "locus_tag", ["UNKNOWN"]
                             )[0]
-                            translation = feature.qualifiers.get("translation", [None])[
-                                0
-                            ]
+
+                            # Store "" instead of None to prevent "None" in TSV
+                            raw_translation = feature.qualifiers.get(
+                                "translation", [None]
+                            )[0]
+                            translation = (
+                                raw_translation if raw_translation is not None else ""
+                            )
 
                             hits[kw].append(
                                 {
@@ -119,12 +162,14 @@ def scan_file_for_keywords(
                                     "locus": record.id,
                                 }
                             )
-                            # A gene matching multiple keywords is added to each keyword's result list independently
 
     except (OSError, UnicodeDecodeError, ValueError) as e:
         print(f"  [!] Error reading {file_path.name}: {e}", file=sys.stderr)
 
     return hits
+
+
+# ── CLI ────────────────────────────────────────────────────────────────────────
 
 
 def get_args() -> argparse.Namespace:
@@ -156,7 +201,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--exact",
         action="store_true",
-        help="If flagged, restricts output to products present in EXACTLY the min_genomes value.",
+        help="Restrict output to keywords present in EXACTLY the min_genomes value.",
     )
     parser.add_argument(
         "-o",
@@ -169,7 +214,7 @@ def get_args() -> argparse.Namespace:
         "-f",
         "--fasta",
         action="store_true",
-        help="If flagged, automatically generates a matching FASTA file alongside the TSV output.",
+        help="Also generate a matching FASTA file alongside the TSV output.",
     )
     parser.add_argument(
         "-v",
@@ -177,12 +222,14 @@ def get_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help=(
-            "Increase output verbosity. By default, only major milestones and "
-            "a progress bar are shown. With --verbose, every file being scanned "
-            "is printed. Useful for debugging."
+            "Print every file being scanned. By default only major milestones "
+            "and a progress bar are shown."
         ),
     )
     return parser.parse_args()
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
@@ -215,18 +262,21 @@ def main() -> None:
             if args.verbose:
                 print(f"  -> Scanning {file_path.name}...", file=sys.stderr)
             scanned_files += 1
-            file_hits = scan_file_for_keywords(file_path, args.keywords)
 
+            # Use relative path as genome key to prevent namespace collisions
+            # when two files share the same filename in different subdirectories.
+            try:
+                genome_key = str(file_path.relative_to(args.input))
+            except ValueError:
+                genome_key = file_path.name
+
+            file_hits = scan_file_for_keywords(file_path, args.keywords)
             for kw, hit_list in file_hits.items():
-                master_results[kw][file_path.name].extend(hit_list)
+                master_results[kw][genome_key].extend(hit_list)
 
         print(f"\n[*] Scan complete. Parsed {scanned_files} files.", file=sys.stderr)
         print("-" * 60, file=sys.stderr)
 
-        output_lines = [
-            "Keyword\tGenomes_Found\tGenome_File\tLocus\tLocus_Tag\tProduct\tProtein_Sequence",
-        ]
-        fasta_lines = []
         valid_results = {}
         failed_keywords = []
 
@@ -234,48 +284,15 @@ def main() -> None:
             kw_lower = kw.lower()
             genomes_with_kw = master_results.get(kw_lower, {})
             genome_count = len(genomes_with_kw)
-
             meets_condition = (
                 (genome_count == args.min_genomes)
                 if args.exact
                 else (genome_count >= args.min_genomes)
             )
-
             if meets_condition:
                 valid_results[kw] = genomes_with_kw
             else:
                 failed_keywords.append((kw, genome_count))
-
-        found_anything = len(valid_results) > 0
-
-        if found_anything:
-            # All tiers sort ascending (lowest to highest, A-Z)
-            # Negative numbers sort descending (highest conservation first), strings sort ascending (A-Z)
-            sorted_results = sorted(
-                valid_results.items(),
-                key=lambda item: (
-                    len(item[1]),  # Tier 1: Genome count (Ascending)
-                    sum(
-                        len(hits) for hits in item[1].values()
-                    ),  # Tier 2: Total hit count (Ascending)
-                    item[0].lower(),  # Tier 3: Alphabetical keyword (Ascending)
-                ),
-            )
-
-            for kw, genomes_with_kw in sorted_results:
-                print(
-                    f"[+] Keyword '{kw}' is CONSERVED across {len(genomes_with_kw)} genomes.",
-                    file=sys.stderr,
-                )
-                for genome_name, hits in genomes_with_kw.items():
-                    for hit in hits:
-                        output_lines.append(
-                            f"{kw}\t{len(genomes_with_kw)}\t{genome_name}\t{hit['locus']}\t{hit['locus_tag']}\t{hit['product']}\t{hit['translation']}"
-                        )
-                        if args.fasta and hit["translation"] is not None:
-                            header = f">{genome_name}|{hit['locus']}|{hit['locus_tag']}|{hit['product']}"
-                            seq_wrapped = wrap_fasta(hit["translation"])
-                            fasta_lines.append(f"{header}\n{seq_wrapped}")
 
         for kw, genome_count in failed_keywords:
             print(
@@ -283,42 +300,109 @@ def main() -> None:
                 file=sys.stderr,
             )
 
-        print("-" * 60, file=sys.stderr)
-
-        if not found_anything:
+        if not valid_results:
             print(
-                "[!] No keywords met the minimum genome threshold. No output written.",
+                "\n[!] No keywords met the minimum genome threshold. No output written.",
                 file=sys.stderr,
             )
-        elif args.output:
+            print("-" * 60, file=sys.stderr)
+            return
+
+        # 3-Tier sort: most conserved first
+        #   Tier 1: genome count          DESCENDING (most conserved at top)
+        #   Tier 2: total physical copies DESCENDING (single-copy before multicopy)
+        #   Tier 3: alphabetical keyword  ASCENDING
+        sorted_results = sorted(
+            valid_results.items(),
+            key=lambda item: (
+                -len(item[1]),
+                -sum(len(hits) for hits in item[1].values()),
+                item[0].lower(),
+            ),
+        )
+
+        for kw, genomes_with_kw in sorted_results:
+            print(
+                f"[+] Keyword '{kw}' is CONSERVED across {len(genomes_with_kw)} genomes.",
+                file=sys.stderr,
+            )
+
+        print("-" * 60, file=sys.stderr)
+
+        TSV_HEADER = "Keyword\tGenomes_Found\tGenome_File\tLocus\tLocus_Tag\tProduct\tProtein_Sequence"
+        fasta_path = (
+            args.output.with_suffix(".fasta") if (args.fasta and args.output) else None
+        )
+
+        if args.output:
             try:
-                # utf-8-sig adds a BOM, enabling auto-detection in Excel
-                with open(args.output, "w", encoding="utf-8-sig") as f:
-                    f.write("\n".join(output_lines) + "\n")
+                # Stream-write rows directly rather than accumulating strings in RAM.
+                # For large eukaryotic or metagenomic datasets, list accumulation +
+                # join() can spike memory significantly. Writing row-by-row keeps
+                # memory usage flat regardless of dataset size.
+                with ExitStack() as stack:
+                    out_tsv = stack.enter_context(
+                        open(args.output, "w", encoding="utf-8-sig")
+                    )
+                    out_fasta = (
+                        stack.enter_context(open(fasta_path, "w", encoding="utf-8"))
+                        if fasta_path
+                        else None
+                    )
+
+                    out_tsv.write(TSV_HEADER + "\n")
+
+                    for kw, genomes_with_kw in sorted_results:
+                        genome_count = len(genomes_with_kw)
+                        for genome_name, hits in genomes_with_kw.items():
+                            for hit in hits:
+                                out_tsv.write(
+                                    f"{kw}\t{genome_count}\t{genome_name}\t"
+                                    f"{hit['locus']}\t{hit['locus_tag']}\t"
+                                    f"{hit['product']}\t{hit['translation']}\n"
+                                )
+                                if out_fasta and hit["translation"]:
+                                    # Keyword is prepended to the FASTA header to guarantee
+                                    # uniqueness when the same gene matches multiple keywords.
+                                    # Without the keyword prefix, a gene matching both
+                                    # "nisin" and "bacteriocin" would produce two identical
+                                    # headers, causing crashes in MAFFT/IQ-TREE.
+                                    header = (
+                                        f">{kw}|{genome_name}|{hit['locus']}|"
+                                        f"{hit['locus_tag']}|{hit['product']}"
+                                    )
+                                    seq_wrapped = wrap_fasta(hit["translation"])
+                                    out_fasta.write(f"{header}\n{seq_wrapped}\n")
+
                 print(
                     f"[*] Success! Matrix written to {args.output.resolve()}",
                     file=sys.stderr,
                 )
-
-                if args.fasta and fasta_lines:
-                    fasta_path = args.output.with_suffix(".fasta")
-                    # FASTA must use standard utf-8 for compatibility with downstream tools
-                    with open(fasta_path, "w", encoding="utf-8") as f_fasta:
-                        f_fasta.write("\n".join(fasta_lines) + "\n")
+                if fasta_path:
                     print(
-                        f"[*] FASTA sequences written to {fasta_path.name}",
+                        f"[*] FASTA sequences written to {fasta_path.resolve()}",
                         file=sys.stderr,
                     )
 
             except OSError as e:
                 sys.exit(f"\n[!] Error writing file: {e}")
+
         else:
-            # If no output file is provided but data exists, dump TSV to stdout
+            # No output file — dump TSV to stdout
             print(
                 "\n[!] Note: No output file specified (-o). Printing to stdout:\n",
                 file=sys.stderr,
             )
-            sys.stdout.write("\n".join(output_lines) + "\n")
+            sys.stdout.write(TSV_HEADER + "\n")
+            for kw, genomes_with_kw in sorted_results:
+                genome_count = len(genomes_with_kw)
+                for genome_name, hits in genomes_with_kw.items():
+                    for hit in hits:
+                        sys.stdout.write(
+                            f"{kw}\t{genome_count}\t{genome_name}\t"
+                            f"{hit['locus']}\t{hit['locus_tag']}\t"
+                            f"{hit['product']}\t{hit['translation']}\n"
+                        )
 
     except KeyboardInterrupt:
         sys.exit("\n[!] Scan interrupted by user.")
