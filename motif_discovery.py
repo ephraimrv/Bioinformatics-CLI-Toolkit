@@ -24,22 +24,74 @@ Background and algorithm:
 
       Seed     → For each distinct k-mer in the input sequences, build an
                  initial Position Weight Matrix (PWM) and score it.
-      Quick EM → Run 25 EM iterations for the top --seeds candidates.
+      Cluster  → Before advancing seeds to EM, filter out seeds within
+                 --min-hamming Hamming distance of a higher-scoring seed.
+                 This prevents redundant EM runs on shifted variants of the
+                 same underlying motif (the "seed collision" problem).
+      Quick EM → Run 25 EM iterations for the top --seeds diverse candidates.
       Full EM  → Run --iter EM iterations for the top --refine candidates.
       Report   → The best converged motif is reported. Its instances are
-                 masked in each sequence and the process repeats for the
-                 next motif.
+                 masked and the process repeats for the next motif.
 
     E-step: P(motif at position j | sequence, PWM) ∝ exp(log-odds score)
-    M-step: Update PWM using the fractional expected counts (soft EM).
+    M-step: Update PWM using the fractional expected counts (soft EM),
+            using whichever strand (forward or reverse complement) gave
+            the higher log-odds score at each position.
     Score:  Sum of log-likelihood across all sequences.
+
+BIDIRECTIONAL STRAND SCANNING:
+    Transcription factors bind double-stranded DNA. They do not care which
+    strand the genome annotators labeled the "coding" strand. A TF binding
+    GATA on the template strand appears as TATC in your extracted sequence.
+
+    This script scans BOTH strands at every position during the E-step and
+    M-step. At each position j, the forward window score and the reverse
+    complement window score are both computed; only the higher of the two
+    contributes to the probability and PWM update. The strand that produced
+    the best score for the best-position instance in each sequence is reported
+    in the output as '+' or '-'.
+
+    Note: upstream sequences produced by universal_promoter_extractor.py are
+    already strand-corrected (5'→3' relative to the gene). Bidirectional
+    scanning additionally handles palindromic TF binding sites and sequences
+    supplied from external sources.
+
+SEED CLUSTERING (diversity-aware seeding):
+    All unique W-mers from the input sequences are scored and ranked. Without
+    clustering, the top --seeds seeds may all be shifted variants of the same
+    dominant motif (e.g., ATCGATCG, TCGATCGA, CGATCGAT), wasting all --seeds
+    EM runs on convergence to the same PWM.
+
+    After scoring, seeds are greedily clustered by Hamming distance. A seed
+    is only advanced to EM if it differs by at least --min-hamming positions
+    from every already-selected seed. This ensures the seed pool is physically
+    diverse, so EM has a real chance of discovering multiple distinct motifs.
+    Default min-hamming is 3 (configurable via --min-hamming).
+
+MASKING THRESHOLD (prevents corruption of multi-motif discovery):
+    After each motif is found, the OOPS model forces a "best" position in
+    every sequence to be masked. If a sequence does not actually contain
+    Motif 1, the forced match may overwrite a real binding site for Motif 2.
+
+    The --mask-threshold flag (default 0.0) sets a log-odds score floor.
+    A position is only masked if its score exceeds the threshold, meaning
+    the subsequence looks more like the motif than background. Sequences
+    with no plausible Motif 1 site are left unmasked, protecting their
+    Motif 2 sites. A threshold of 0.0 corresponds to break-even with the
+    background model; increase it (e.g., 2.0) for stricter masking.
+
+PERFORMANCE — zip+Counter COLUMN PROFILING:
+    The profile builder in _build_profile_from_instances() uses
+    zip(*sequences) + Counter for column-wise counting rather than a
+    nested Python loop. Counter runs in C (CPython), substantially reducing
+    the number of Python-level operations for large sequence sets.
 
 License: MIT
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
+Note:
+    This module is part of ongoing research and is associated with an upcoming
+    publication. Please cite appropriately when used in derivative works.
+    See LICENSE file in the repository root for full license terms.
 
 Example Usage:
     # Find top 3 motifs of default 15bp width
@@ -48,6 +100,12 @@ Example Usage:
     # Custom width, more seeding, verbose
     $ python3 motif_discovery.py -i upstream.fasta --top 3 --width 12 \\
       --seeds 80 --refine 30 -o motifs.tsv
+
+    # Diverse seeds: reject seeds within 4 positions of a higher-scoring seed
+    $ python3 motif_discovery.py -i upstream.fasta --top 3 --min-hamming 4
+
+    # Stricter masking: only mask positions scoring >2.0 log-odds
+    $ python3 motif_discovery.py -i upstream.fasta --top 3 --mask-threshold 2.0
 
 Notes:
     - Input sequences do NOT need to be aligned (raw upstream FASTA is fine).
@@ -60,10 +118,11 @@ Notes:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import math
 import sys
+from collections import Counter
 
 try:
     from Bio import SeqIO
@@ -73,6 +132,16 @@ except ImportError:
         "       Install it with: pip install biopython"
     )
 from utils import base_parser
+
+# ── Reverse complement ────────────────────────────────────────────────────────
+
+_RC_TABLE = str.maketrans("ACGTN", "TGCAN")
+
+
+def _revcomp(seq: str) -> str:
+    """Return the reverse complement of a DNA string. N maps to N."""
+    return seq.translate(_RC_TABLE)[::-1]
+
 
 # ── Background model ──────────────────────────────────────────────────────────
 
@@ -132,16 +201,23 @@ def _init_pwm(kmer: str, pseudocount: float) -> dict[str, list[float]]:
 # ── EM core ───────────────────────────────────────────────────────────────────
 
 
-def _pos_log_odds(seq: str, start: int, pwm: dict, bg: dict, width: int) -> float:
-    """Log-odds score for the motif starting at position `start` in `seq`.
+def _score_window(window: str, pwm: dict, bg: dict) -> float:
+    """Log-odds score for a pre-extracted window string against a PWM.
 
-    Log-odds = sum_{k=0}^{W-1} log( PWM[base][k] / background[base] )
+    Core scoring primitive used by both the forward and reverse complement
+    paths in the E-step, M-step, and instance extraction. Returns -inf if
+    any character in the window is not in the PWM (e.g. masked 'N').
 
-    Returns -inf if any position contains a non-ACGT character (masked 'N').
+    Args:
+        window: DNA string of exactly the motif width.
+        pwm:    Current PWM dict (``"ACGT"`` → list of probabilities).
+        bg:     Background nucleotide frequencies.
+
+    Returns:
+        Sum of position-wise log(PWM[base] / background[base]), or -inf.
     """
     score = 0.0
-    for k in range(width):
-        base = seq[start + k]
+    for k, base in enumerate(window):
         if base not in pwm:
             return float("-inf")
         p = max(pwm[base][k], 1e-300)
@@ -150,16 +226,31 @@ def _pos_log_odds(seq: str, start: int, pwm: dict, bg: dict, width: int) -> floa
     return score
 
 
+def _pos_log_odds(seq: str, start: int, pwm: dict, bg: dict, width: int) -> float:
+    """Log-odds score for the motif at position ``start`` in ``seq`` (forward strand).
+
+    Thin wrapper around ``_score_window`` for positional indexing.
+    For bidirectional scoring, call ``_score_window`` on both the forward
+    window and its reverse complement and take the max.
+    """
+    return _score_window(seq[start : start + width], pwm, bg)
+
+
 def _e_step(sequences: list[str], pwm: dict, bg: dict, width: int) -> list[list[float]]:
     """E-step: compute P(motif at position j | sequence, PWM) via softmax.
 
-    For each sequence, all valid start positions are scored with log-odds,
-    then normalised to a probability distribution via softmax (numerically
-    stable: subtract the max before exponentiating).
+    Scans BOTH strands at every position. At each start position j, the
+    forward window and its reverse complement are both scored; the higher
+    log-odds score is used as the position's score. This correctly captures
+    TF binding sites regardless of which strand they appear on.
+
+    For each sequence, all valid start positions are scored, then normalised
+    to a probability distribution via softmax (numerically stable: subtract
+    max before exponentiating).
 
     Args:
         sequences: Input sequences (may contain 'N' at masked positions).
-        pwm:       Current PWM (dict "ACGT" → list[float]).
+        pwm:       Current PWM (dict ``"ACGT"`` → list[float]).
         bg:        Background model.
         width:     Motif width.
 
@@ -173,7 +264,12 @@ def _e_step(sequences: list[str], pwm: dict, bg: dict, width: int) -> list[list[
             all_probs.append([1.0])
             continue
 
-        log_scores = [_pos_log_odds(seq, j, pwm, bg, width) for j in range(n_pos)]
+        log_scores = []
+        for j in range(n_pos):
+            window = seq[j : j + width]
+            fwd = _score_window(window, pwm, bg)
+            rev = _score_window(_revcomp(window), pwm, bg)
+            log_scores.append(max(fwd, rev))
 
         # Softmax with -inf handling
         valid = [s for s in log_scores if s > float("-inf")]
@@ -194,18 +290,25 @@ def _m_step(
     probs: list[list[float]],
     width: int,
     pseudocount: float,
+    pwm: dict,
+    bg: dict,
 ) -> dict[str, list[float]]:
     """M-step: update PWM using fractional expected counts.
 
-    For each sequence and each start position, the probability Z[j] acts as a
-    fractional weight. The count for base b at motif position k is incremented
-    by Z[j] if sequence[j+k] == b. Pseudocounts prevent zero probabilities.
+    For each position j with probability z, determines whether the forward
+    window or its reverse complement scored higher under the current PWM,
+    then uses the better-scoring strand's sequence to update the counts.
+    This ensures the PWM is updated toward the actual strand orientation
+    of the motif, rather than always accumulating forward-strand windows
+    even when the true binding site is on the opposite strand.
 
     Args:
         sequences:   Input sequences.
         probs:       E-step output (position probabilities per sequence).
         width:       Motif width.
         pseudocount: Smoothing value.
+        pwm:         Current PWM (used to determine which strand scores higher).
+        bg:          Background model.
 
     Returns:
         Updated PWM.
@@ -216,37 +319,49 @@ def _m_step(
         for j, z in enumerate(seq_probs):
             if z < 1e-15:
                 continue
-            for k in range(width):
-                idx = j + k
-                if idx >= len(seq):
-                    break
-                base = seq[idx]
+            window = seq[j : j + width]
+            if len(window) < width:
+                break
+
+            # Use whichever strand's window scored higher under the current PWM
+            rc_window = _revcomp(window)
+            fwd_score = _score_window(window, pwm, bg)
+            rev_score = _score_window(rc_window, pwm, bg)
+            use_window = rc_window if rev_score > fwd_score else window
+
+            for k, base in enumerate(use_window):
                 if base in counts:
                     counts[base][k] += z
 
-    pwm: dict[str, list[float]] = {}
+    pwm_new: dict[str, list[float]] = {}
     for pos in range(width):
         total = sum(counts[b][pos] for b in "ACGT") or 1.0
         for b in "ACGT":
-            if b not in pwm:
-                pwm[b] = [0.0] * width
-            pwm[b][pos] = counts[b][pos] / total
+            if b not in pwm_new:
+                pwm_new[b] = [0.0] * width
+            pwm_new[b][pos] = counts[b][pos] / total
 
-    return pwm
+    return pwm_new
 
 
 def _log_likelihood(sequences: list[str], pwm: dict, bg: dict, width: int) -> float:
     """Total log-likelihood of all sequences under the current PWM.
 
-    Uses log-sum-exp for numerical stability. Masked positions ('N') return
-    -inf log-odds and are excluded from the sum.
+    Scores both forward and reverse complement at each position (taking the
+    max), consistent with the bidirectional E-step. Uses log-sum-exp for
+    numerical stability.
     """
     total = 0.0
     for seq in sequences:
         n_pos = len(seq) - width + 1
         if n_pos <= 0:
             continue
-        log_scores = [_pos_log_odds(seq, j, pwm, bg, width) for j in range(n_pos)]
+        log_scores = []
+        for j in range(n_pos):
+            window = seq[j : j + width]
+            fwd = _score_window(window, pwm, bg)
+            rev = _score_window(_revcomp(window), pwm, bg)
+            log_scores.append(max(fwd, rev))
         valid = [s for s in log_scores if s > float("-inf")]
         if not valid:
             continue
@@ -283,7 +398,7 @@ def _run_em(
 
     for _ in range(max_iter):
         probs = _e_step(sequences, pwm, bg, width)
-        pwm = _m_step(sequences, probs, width, pseudocount)
+        pwm = _m_step(sequences, probs, width, pseudocount, pwm, bg)
         ll = _log_likelihood(sequences, pwm, bg, width)
         if ll - prev_ll < tol:
             break
@@ -301,40 +416,95 @@ def _extract_instances(
     pwm: dict,
     bg: dict,
     width: int,
-) -> list[tuple[str, str, int]]:
+) -> list[tuple[str, str, int, str]]:
     """Find the best-scoring position of the motif in each sequence.
 
+    Scores both forward and reverse complement at every position and picks
+    the overall best. Reports which strand produced the winning score.
+
     Returns:
-        List of (seq_id, extracted_sequence, start_position_1indexed).
+        List of (seq_id, extracted_sequence, start_position_1indexed, strand)
+        where strand is '+' (forward) or '-' (reverse complement).
     """
     instances = []
     for seq, sid in zip(sequences, seq_ids):
         n_pos = len(seq) - width + 1
         if n_pos <= 0:
-            instances.append((sid, seq[:width].ljust(width, "N"), 1))
+            instances.append((sid, seq[:width].ljust(width, "N"), 1, "+"))
             continue
-        best_j = max(range(n_pos), key=lambda j: _pos_log_odds(seq, j, pwm, bg, width))
-        instances.append((sid, seq[best_j : best_j + width], best_j + 1))
+
+        best_j = 0
+        best_score = float("-inf")
+        best_strand = "+"
+
+        for j in range(n_pos):
+            window = seq[j : j + width]
+            fwd_score = _score_window(window, pwm, bg)
+            rev_score = _score_window(_revcomp(window), pwm, bg)
+            if rev_score > fwd_score:
+                score, strand = rev_score, "-"
+            else:
+                score, strand = fwd_score, "+"
+            if score > best_score:
+                best_score = score
+                best_j = j
+                best_strand = strand
+
+        instances.append((sid, seq[best_j : best_j + width], best_j + 1, best_strand))
     return instances
 
 
 def _mask_sequences(
-    sequences: list[str], instances: list[tuple], width: int
-) -> list[str]:
-    """Replace each motif instance with 'N' to mask it for subsequent searches.
+    sequences: list[str],
+    instances: list[tuple],
+    pwm: dict,
+    bg: dict,
+    width: int,
+    threshold: float = 0.0,
+) -> tuple[list[str], int]:
+    """Replace confirmed motif instances with 'N' to mask for subsequent searches.
 
-    'N' characters return -inf log-odds in _pos_log_odds, so they are
-    effectively invisible to the EM in the next motif search.
+    Only masks a position if its forward-strand log-odds score exceeds
+    ``threshold``. This prevents the OOPS masking danger: if a sequence does
+    not actually contain Motif 1, the forced "best" position may coincide with
+    a real Motif 2 binding site. Without a threshold, that Motif 2 site gets
+    masked unconditionally, corrupting subsequent motif discovery. With a
+    threshold, sequences where the best Motif 1 score is below background
+    (score ≤ threshold) are left unmasked.
+
+    A threshold of 0.0 means "only mask if the subsequence looks more like
+    the motif than background." Increase (e.g., 2.0) for stricter masking.
+
+    'N' characters score -inf in ``_score_window``, making them invisible
+    to the EM in subsequent motif searches.
+
+    Args:
+        sequences: Current (possibly already masked) working sequences.
+        instances: Output of ``_extract_instances`` — 4-tuples.
+        pwm:       Converged PWM of the motif just found.
+        bg:        Background model.
+        width:     Motif width.
+        threshold: Minimum log-odds score required to mask (default: 0.0).
+
+    Returns:
+        (masked_sequences, n_masked) — the updated sequence list and a count
+        of how many sequences were actually masked.
     """
     masked = []
-    for seq, (_, _, start_1) in zip(sequences, instances):
-        s = list(seq)
+    n_masked = 0
+    for seq, (_, _, start_1, _) in zip(sequences, instances):
         start_0 = start_1 - 1
-        for k in range(width):
-            if start_0 + k < len(s):
-                s[start_0 + k] = "N"
-        masked.append("".join(s))
-    return masked
+        score = _pos_log_odds(seq, start_0, pwm, bg, width)
+        if score > threshold:
+            s = list(seq)
+            for k in range(width):
+                if start_0 + k < len(s):
+                    s[start_0 + k] = "N"
+            masked.append("".join(s))
+            n_masked += 1
+        else:
+            masked.append(seq)  # score too low — likely not a real site; leave unmasked
+    return masked, n_masked
 
 
 # ── Profile from instances (for display) ──────────────────────────────────────
@@ -345,7 +515,10 @@ def _build_profile_from_instances(
 ) -> tuple[str, dict[str, list[float]], list[float]]:
     """Build consensus, PPM, and IC from a list of extracted motif sequences.
 
-    Identical to the core of alignment_conservation_profiler._build_profile
+    Uses zip(*extracted) + Counter for column-wise counting (C-backed,
+    faster than a Python nested loop for large instance sets).
+
+    Identical in output to alignment_conservation_profiler._build_profile
     but inlined here so this script is standalone.
     """
     seq_len = len(extracted[0])
@@ -354,10 +527,10 @@ def _build_profile_from_instances(
     counts = {c: [0] * seq_len for c in valid}
     max_bits = math.log2(4.0)
 
-    for seq in extracted:
-        for i, ch in enumerate(seq):
-            if ch in counts:
-                counts[ch][i] += 1
+    for i, column in enumerate(zip(*extracted)):
+        col_counts = Counter(column)
+        for c in valid:
+            counts[c][i] = col_counts[c]  # Counter returns 0 for missing keys
 
     consensus_list = []
     ppm = {c: [0.0] * seq_len for c in valid}
@@ -383,6 +556,43 @@ def _build_profile_from_instances(
     return "".join(consensus_list), ppm, ic
 
 
+# ── Seed clustering ───────────────────────────────────────────────────────────
+
+
+def _hamming(a: str, b: str) -> int:
+    """Hamming distance between two equal-length strings."""
+    return sum(x != y for x, y in zip(a, b))
+
+
+def _cluster_seeds(
+    scored_seeds: list[tuple[float, str]],
+    n_seeds: int,
+    min_hamming: int,
+) -> list[str]:
+    """Greedily select diverse seeds by Hamming distance.
+
+    Iterates through seeds in descending score order. A seed is only
+    selected if it differs from every already-selected seed by at least
+    ``min_hamming`` positions. This prevents --seeds EM runs from all
+    converging to shifted variants of the same dominant motif.
+
+    Args:
+        scored_seeds: List of (score, kmer) sorted descending by score.
+        n_seeds:      Maximum number of diverse seeds to return.
+        min_hamming:  Minimum Hamming distance between any two selected seeds.
+
+    Returns:
+        List of up to ``n_seeds`` diverse seed k-mers.
+    """
+    diverse: list[str] = []
+    for _, kmer in scored_seeds:
+        if all(_hamming(kmer, kept) >= min_hamming for kept in diverse):
+            diverse.append(kmer)
+            if len(diverse) >= n_seeds:
+                break
+    return diverse
+
+
 # ── Main discovery pipeline ───────────────────────────────────────────────────
 
 
@@ -394,45 +604,53 @@ def discover_motifs(
     n_seeds: int,
     n_refine: int,
     pseudocount: float,
+    min_hamming: int = 3,
+    mask_threshold: float = 0.0,
 ) -> list[dict]:
     """Run EM motif discovery: find top N non-overlapping motifs.
 
     Strategy:
-      1. Collect all unique W-mers from all input sequences as seeds.
-      2. Quick EM (25 iterations) on the top `n_seeds` seeds ranked by
-         initial log-likelihood.
-      3. Full EM (`--iter` iterations) on the top `n_refine` seeds from step 2.
-      4. Report the best converged motif.
-      5. Mask the motif's best position in each sequence and repeat for
-         the next motif.
+      1. Collect all unique W-mers from all input sequences as candidate seeds.
+      2. Score each seed by initial log-likelihood (bidirectional).
+      3. Cluster seeds by Hamming distance — only advance seeds that differ
+         by at least ``min_hamming`` from all higher-scoring seeds already
+         selected. This ensures the seed pool is physically diverse.
+      4. Quick EM (25 iterations) on the top ``n_seeds`` diverse seeds.
+      5. Full EM (``--iter`` iterations) on the top ``n_refine`` from step 4.
+      6. Report the best converged motif.
+      7. Mask confirmed instances (score > ``mask_threshold``) with 'N' and
+         repeat for the next motif.
 
     Args:
-        sequences:   Input sequences (≥ width bp each).
-        seq_ids:     Sequence identifiers (same order).
-        width:       Motif width in bp.
-        top_n:       Number of motifs to find.
-        n_seeds:     How many seeds to advance to quick EM (step 2).
-        n_refine:    How many seeds to advance to full EM (step 3).
-        pseudocount: PWM smoothing value.
+        sequences:      Input sequences (>= width bp each).
+        seq_ids:        Sequence identifiers (same order).
+        width:          Motif width in bp.
+        top_n:          Number of motifs to find.
+        n_seeds:        Diverse seeds to advance to quick EM.
+        n_refine:       Quick-EM results to advance to full EM.
+        pseudocount:    PWM smoothing value.
+        min_hamming:    Minimum Hamming distance between selected seeds.
+        mask_threshold: Log-odds threshold for masking (default 0.0 = above background).
 
     Returns:
-        List of motif dicts, one per discovered motif, each containing:
+        List of motif dicts, each containing:
           consensus (str), ppm (dict), ic (list), total_ic (float),
-          log_likelihood (float), instances (list of (id, seq, start_1)).
+          log_likelihood (float),
+          instances (list of (seq_id, seq, start_1indexed, strand)).
     """
     bg = _compute_background(sequences)
-    working_seqs = list(sequences)  # masked progressively
+    working_seqs = list(sequences)
     results = []
 
     print(
-        f"  [*] Background: {', '.join(f'{b}={v:.3f}' for b,v in bg.items())}",
+        f"  [*] Background: {', '.join(f'{b}={v:.3f}' for b, v in bg.items())}",
         file=sys.stderr,
     )
 
     for motif_num in range(1, top_n + 1):
         print(f"\n  [*] Searching for Motif {motif_num}/{top_n}...", file=sys.stderr)
 
-        # --- Collect all unique k-mers from current (masked) sequences ----
+        # ── Collect and score all unique k-mer seeds ──────────────────────
         all_kmers: list[str] = []
         for seq in working_seqs:
             for start in range(len(seq) - width + 1):
@@ -448,7 +666,6 @@ def discover_motifs(
             )
             break
 
-        # --- Score all seeds by initial log-likelihood -------------------
         seen_kmers: set[str] = set()
         seed_scores: list[tuple[float, str]] = []
         for kmer in all_kmers:
@@ -460,14 +677,18 @@ def discover_motifs(
             seed_scores.append((ll0, kmer))
 
         seed_scores.sort(reverse=True)
-        top_seeds = [k for _, k in seed_scores[:n_seeds]]
+
+        # ── Cluster seeds by Hamming distance ─────────────────────────────
+        top_seeds = _cluster_seeds(seed_scores, n_seeds, min_hamming)
+        n_collapsed = max(0, len(seed_scores) - len(top_seeds))
         print(
             f"      Unique seeds: {len(seed_scores)}  |  "
-            f"Advancing top {len(top_seeds)} to quick EM",
+            f"Diverse (>={min_hamming} Hamming): {len(top_seeds)}  |  "
+            f"Collapsed: {n_collapsed}",
             file=sys.stderr,
         )
 
-        # --- Quick EM (25 iterations) to narrow the field ----------------
+        # ── Quick EM (25 iterations) to narrow the field ──────────────────
         quick_results: list[tuple[float, dict]] = []
         for kmer in top_seeds:
             pwm0 = _init_pwm(kmer, pseudocount)
@@ -484,13 +705,10 @@ def discover_motifs(
 
         quick_results.sort(key=lambda x: x[0], reverse=True)
         refine_pwms = [pwm for _, pwm in quick_results[:n_refine]]
-        print(
-            f"      Advancing top {len(refine_pwms)} to full EM",
-            file=sys.stderr,
-        )
+        print(f"      Advancing top {len(refine_pwms)} to full EM", file=sys.stderr)
 
-        # --- Full EM to convergence --------------------------------------
-        best_ll = float("-inf")
+        # ── Full EM to convergence ────────────────────────────────────────
+        best_ll: float = float("-inf")
         best_pwm: dict = {}
         for pwm0 in refine_pwms:
             pwm_f, ll_f = _run_em(
@@ -512,9 +730,9 @@ def discover_motifs(
             )
             break
 
-        # --- Build profile from best-position instances ------------------
+        # ── Build profile from best-position instances ────────────────────
         instances = _extract_instances(working_seqs, seq_ids, best_pwm, bg, width)
-        extracted_seqs = [seq for _, seq, _ in instances]
+        extracted_seqs = [seq for _, seq, _, _ in instances]
         consensus, ppm, ic = _build_profile_from_instances(extracted_seqs)
 
         results.append(
@@ -534,8 +752,15 @@ def discover_motifs(
             file=sys.stderr,
         )
 
-        # --- Mask this motif before next search --------------------------
-        working_seqs = _mask_sequences(working_seqs, instances, width)
+        # ── Mask confirmed sites before next search ───────────────────────
+        working_seqs, n_masked = _mask_sequences(
+            working_seqs, instances, best_pwm, bg, width, threshold=mask_threshold
+        )
+        print(
+            f"      Masked {n_masked}/{len(working_seqs)} sequence(s) "
+            f"(threshold={mask_threshold:.1f}).",
+            file=sys.stderr,
+        )
 
     return results
 
@@ -587,6 +812,33 @@ def main() -> None:
         metavar="F",
         help="PWM pseudocount for smoothing (Default: 0.1).",
     )
+    parser.add_argument(
+        "--min-hamming",
+        type=int,
+        default=3,
+        metavar="D",
+        help=(
+            "Minimum Hamming distance between any two selected seeds. "
+            "Seeds within this distance of a higher-scoring seed are discarded "
+            "before EM to prevent redundant runs on shifted variants of the same "
+            "motif (seed collision). Default: 3 (~20%% of a 15bp width). "
+            "Increase for wider motifs; decrease for very short motifs."
+        ),
+    )
+    parser.add_argument(
+        "--mask-threshold",
+        type=float,
+        default=0.0,
+        metavar="F",
+        help=(
+            "Log-odds score threshold for masking (Default: 0.0). "
+            "A position is only masked if its score exceeds this value. "
+            "Score > 0 means the subsequence looks more like the motif than "
+            "background. Sequences with no plausible site are left unmasked, "
+            "protecting their binding sites for subsequent motif discovery. "
+            "Increase (e.g., 2.0) for stricter masking."
+        ),
+    )
     args = parser.parse_args()
 
     if args.top < 1:
@@ -595,11 +847,22 @@ def main() -> None:
         sys.exit("[!] --width must be a positive integer.")
 
     print(f"[*] EM Motif Discovery", file=sys.stderr)
-    print(f"[*] Input     : {args.input.name}", file=sys.stderr)
-    print(f"[*] Width     : {args.width}bp", file=sys.stderr)
-    print(f"[*] Motifs    : {args.top}", file=sys.stderr)
-    print(f"[*] Seeds     : {args.seeds} quick → {args.refine} full", file=sys.stderr)
-    print(f"[*] Max iter  : {args.iter}", file=sys.stderr)
+    print(f"[*] Input          : {args.input.name}", file=sys.stderr)
+    print(f"[*] Width          : {args.width}bp", file=sys.stderr)
+    print(f"[*] Motifs         : {args.top}", file=sys.stderr)
+    print(
+        f"[*] Seeds          : {args.seeds} quick -> {args.refine} full",
+        file=sys.stderr,
+    )
+    print(
+        f"[*] Min Hamming    : {args.min_hamming} (seed diversity filter)",
+        file=sys.stderr,
+    )
+    print(
+        f"[*] Mask threshold : {args.mask_threshold} (log-odds floor for masking)",
+        file=sys.stderr,
+    )
+    print(f"[*] Max iter       : {args.iter}", file=sys.stderr)
 
     try:
         records = list(SeqIO.parse(args.input, "fasta"))
@@ -626,6 +889,8 @@ def main() -> None:
             n_seeds=args.seeds,
             n_refine=args.refine,
             pseudocount=args.pseudocount,
+            min_hamming=args.min_hamming,
+            mask_threshold=args.mask_threshold,
         )
 
     except ValueError as e:
@@ -668,9 +933,9 @@ def main() -> None:
         print(f"  {'IC:':<{col_w}}{ic_row}")
 
         print(f"\n  Instances (best position per sequence):")
-        max_id = max(len(sid) for sid, _, _ in m["instances"])
-        for sid, inst_seq, start_1 in m["instances"]:
-            print(f"    {sid:<{max_id}}  pos {start_1:>4}  {inst_seq}")
+        max_id = max(len(sid) for sid, _, _, _ in m["instances"])
+        for sid, inst_seq, start_1, strand in m["instances"]:
+            print(f"    {sid:<{max_id}}  pos {start_1:>4}  strand {strand}  {inst_seq}")
 
     # ── TSV output ────────────────────────────────────────────────────────────
     if args.output:
@@ -693,9 +958,9 @@ def main() -> None:
             ic_row = "\t".join(f"{v:.3f}" for v in m["ic"])
             tsv_blocks.append(f"IC\t{ic_row}")
             tsv_blocks.append("## Instances")
-            max_id = max(len(sid) for sid, _, _ in m["instances"])
-            for sid, inst_seq, start_1 in m["instances"]:
-                tsv_blocks.append(f"{sid}\t{start_1}\t{inst_seq}")
+            max_id = max(len(sid) for sid, _, _, _ in m["instances"])
+            for sid, inst_seq, start_1, strand in m["instances"]:
+                tsv_blocks.append(f"{sid}\t{start_1}\t{strand}\t{inst_seq}")
             tsv_blocks.append("")
 
         try:
