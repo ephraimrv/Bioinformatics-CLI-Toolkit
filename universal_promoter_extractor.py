@@ -35,11 +35,21 @@ KEYWORD SEARCH IN EUKARYOTE MODE:
     two-pass scan per record in eukaryote mode:
         Pass 1 — CDS features: collect {locus_tag: product} for all CDS
                  whose /product annotation matches a keyword.
-        Pass 2 — mRNA features: for locus tags found in pass 1, extract
-                 upstream of the mRNA start (TSS).
+        Pass 2 — mRNA features: for locus tags found in pass 1, resolve
+                 the 5'-most TSS across all isoforms, then extract upstream.
     This guarantees that keyword matching always uses the /product annotation
     regardless of which feature type carries it, while coordinate extraction
     always uses the biologically correct mRNA anchor.
+
+ALTERNATIVE SPLICING (ISOFORM HANDLING):
+    In eukaryotes, a single locus_tag can have multiple mRNA features
+    representing alternative splice variants. Each isoform may have a
+    different Transcription Start Site (TSS). The script resolves this by
+    finding the 5'-most TSS across all isoforms of a locus:
+        Forward strand (+): 5'-most TSS = smallest mRNA start coordinate.
+        Reverse strand (-): 5'-most TSS = largest mRNA end coordinate.
+    When multiple isoforms are detected, a [Multi-isoform] message is printed
+    to stderr showing how many isoforms were found and which TSS was used.
 
 License: MIT
 
@@ -72,21 +82,14 @@ Example usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import sys
 import argparse
 import re
 from pathlib import Path
 from typing import Iterator
-
-try:
-    from Bio import SeqIO
-except ImportError:
-    sys.exit(
-        "ERROR: Biopython is required but not installed.\n"
-        "       Install it with: pip install biopython"
-    )
+from Bio import SeqIO
 from utils import stream_reference_files
 
 # ── Mode constants ─────────────────────────────────────────────────────────────
@@ -103,27 +106,38 @@ _VALID_MODES = (MODE_AUTO, MODE_PROKARYOTE, MODE_EUKARYOTE)
 def _detect_organism_mode(gbk_path: Path) -> str:
     """Detect whether a GenBank file is prokaryotic or eukaryotic.
 
-    Detection is based on the presence of ``mRNA`` features, which are
-    absent from all prokaryotic GenBank files produced by standard
-    annotation pipelines (Prokka, Bakta, NCBI prokaryote annotation)
-    and always present in eukaryotic GenBank files (Ensembl, RefSeq
-    eukaryote, Augustus, MAKER, etc.).
+    Uses raw text streaming rather than BioPython's SeqIO.parse, which
+    is orders of magnitude faster — especially for large eukaryotic
+    GenBank records where SeqIO would instantiate thousands of Python
+    objects just to check one feature type.
 
-    Only the first record in the file is scanned for speed. This is
-    reliable for all standard assemblies (single-chromosome files,
-    multi-contig assemblies) because annotation style is uniform
-    across records. For heterogeneous files, use ``--mode`` explicitly.
+    Strategy: stream lines until the first ``mRNA`` feature key is found
+    (eukaryote) or until the ``ORIGIN`` keyword is reached (end of the
+    feature table — prokaryote). Only the first record is scanned since
+    annotation style is uniform across all records in a standard assembly.
+
+    GenBank format note: feature keys are indented with exactly 5 spaces.
+    Qualifier lines are indented with 21 spaces. Therefore
+    ``line.startswith("     mRNA")`` safely matches feature declarations
+    without false-positives from qualifier values like
+    ``/product="mRNA processing factor"``.
 
     Args:
         gbk_path: Path to the GenBank file to inspect.
 
     Returns:
-        ``"eukaryote"`` if mRNA features are detected, ``"prokaryote"`` otherwise.
+        ``"eukaryote"`` if an mRNA feature is found before ORIGIN,
+        ``"prokaryote"`` otherwise.
     """
     try:
-        for record in SeqIO.parse(gbk_path, "genbank"):
-            feature_types = {f.type for f in record.features}
-            return MODE_EUKARYOTE if "mRNA" in feature_types else MODE_PROKARYOTE
+        with open(gbk_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("     mRNA"):
+                    return MODE_EUKARYOTE
+                # ORIGIN marks the end of the feature table and start of
+                # the raw sequence — no point reading further.
+                if line.startswith("ORIGIN"):
+                    break
     except Exception:
         pass
     return MODE_PROKARYOTE
@@ -264,22 +278,62 @@ def extract_regulatory_regions(
                     if not keyword_loci:
                         continue
 
-                    # Pass 2 — extract upstream of mRNA start (TSS) for matched loci.
+                    # Pass 2 — find the 5'-most TSS per locus across all isoforms.
+                    # In eukaryotes, a single locus_tag can have multiple mRNA
+                    # features (alternative splice variants / isoforms). Each isoform
+                    # may have a different Transcription Start Site. Keeping the first
+                    # one seen is wrong — it picks an arbitrary isoform. The correct
+                    # anchor is the 5'-most TSS, which represents the full extent of
+                    # the regulatory region.
+                    #   Forward strand (+): 5'-most TSS = smallest start coordinate.
+                    #   Reverse strand (-): 5'-most TSS = largest end coordinate.
+                    locus_tss: dict[str, dict] = (
+                        {}
+                    )  # {locus_tag: {start, end, strand, n_isoforms}}
+
                     for feature in record.features:
                         if feature.type != "mRNA":
                             continue
-
                         locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
                         if locus_tag not in keyword_loci:
                             continue
 
-                        product = keyword_loci[locus_tag]
                         start = int(feature.location.start)
                         end = int(feature.location.end)
                         strand = feature.location.strand
 
+                        if locus_tag not in locus_tss:
+                            locus_tss[locus_tag] = {
+                                "start": start,
+                                "end": end,
+                                "strand": strand,
+                                "n_isoforms": 1,
+                            }
+                        else:
+                            entry = locus_tss[locus_tag]
+                            entry["n_isoforms"] += 1
+                            if strand == 1:
+                                entry["start"] = min(entry["start"], start)
+                            else:
+                                entry["end"] = max(entry["end"], end)
+
+                    # Yield one upstream region per locus using the resolved TSS
+                    for locus_tag, bounds in locus_tss.items():
+                        if bounds["n_isoforms"] > 1:
+                            print(
+                                f"      [Multi-isoform] {locus_tag}: "
+                                f"{bounds['n_isoforms']} mRNA isoforms found — "
+                                f"using 5'-most TSS.",
+                                file=sys.stderr,
+                            )
+                        product = keyword_loci[locus_tag]
                         upstream_seq, actual_upstream = _extract_upstream_seq(
-                            record, start, end, strand, upstream_bp, locus_tag
+                            record,
+                            bounds["start"],
+                            bounds["end"],
+                            bounds["strand"],
+                            upstream_bp,
+                            locus_tag,
                         )
                         yield record.id, locus_tag, product, upstream_seq, actual_upstream
 
@@ -420,44 +474,73 @@ def extract_by_loci(
                                 "product", ["Unknown product"]
                             )[0]
 
-                    # Pass 2 — extract upstream of mRNA start (TSS).
+                    # Pass 2 — find the 5'-most TSS per locus across all isoforms.
+                    # In eukaryotes, a single locus_tag can have multiple mRNA
+                    # features (alternative splice variants). Each may have a
+                    # different TSS. We must find the 5'-most TSS — the one
+                    # farthest upstream — which represents the full regulatory region.
+                    #   Forward strand (+): 5'-most TSS = smallest start coordinate.
+                    #   Reverse strand (-): 5'-most TSS = largest end coordinate.
+                    # The already_yielded guard below prevents re-processing a locus
+                    # that was found in a previous record (should not happen in
+                    # well-formed files, but guards against malformed ones).
+                    locus_tss: dict[str, dict] = {}
+
                     for feature in record.features:
-                        if not remaining:
-                            break
                         if feature.type != "mRNA":
                             continue
-
                         locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
                         if locus_tag not in target_set:
                             continue
-
                         if locus_tag in already_yielded:
-                            print(
-                                f"      [!] Warning: {locus_tag} appears on multiple "
-                                f"mRNA features in {gbk_path.name} — skipping duplicate.",
-                                file=sys.stderr,
-                            )
-                            continue
+                            continue  # processed in a prior record
 
-                        product = cds_products.get(locus_tag, "Unknown product")
                         start = int(feature.location.start)
                         end = int(feature.location.end)
                         strand = feature.location.strand
 
-                        upstream_seq, actual_upstream = _extract_upstream_seq(
-                            record, start, end, strand, upstream_bp, locus_tag
-                        )
+                        if locus_tag not in locus_tss:
+                            locus_tss[locus_tag] = {
+                                "start": start,
+                                "end": end,
+                                "strand": strand,
+                                "n_isoforms": 1,
+                            }
+                        else:
+                            entry = locus_tss[locus_tag]
+                            entry["n_isoforms"] += 1
+                            if strand == 1:
+                                entry["start"] = min(entry["start"], start)
+                            else:
+                                entry["end"] = max(entry["end"], end)
 
+                    # Yield one upstream region per locus using the resolved TSS
+                    for locus_tag, bounds in locus_tss.items():
+                        if bounds["n_isoforms"] > 1:
+                            print(
+                                f"      [Multi-isoform] {locus_tag}: "
+                                f"{bounds['n_isoforms']} mRNA isoforms found — "
+                                f"using 5'-most TSS.",
+                                file=sys.stderr,
+                            )
+                        product = cds_products.get(locus_tag, "Unknown product")
+                        upstream_seq, actual_upstream = _extract_upstream_seq(
+                            record,
+                            bounds["start"],
+                            bounds["end"],
+                            bounds["strand"],
+                            upstream_bp,
+                            locus_tag,
+                        )
                         already_yielded.add(locus_tag)
                         remaining.discard(locus_tag)
-
                         yield (
                             record.id,
                             locus_tag,
                             product,
                             upstream_seq,
                             actual_upstream,
-                            strand,
+                            bounds["strand"],
                             genome_label,
                         )
 
