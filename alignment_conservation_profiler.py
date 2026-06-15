@@ -14,19 +14,34 @@ Handles real-world alignments gracefully: ambiguous IUPAC characters (N, Y, R, W
 are silently skipped without crashing the pipeline. Gaps in columns are penalized
 in the IC calculation to correctly report conservation.
 
+ALGORITHM AND IMPLEMENTATION NOTES:
+
+    PPM builder uses zip(*sequences) + Counter for column-wise processing.
+    This is significantly faster than nested Python loops for large alignments
+    because Counter's inner counting loop is implemented in C (CPython). For
+    a 500-sequence × 1000bp alignment, the Python nested loop would evaluate
+    500,000 Python-level iterations; zip+Counter collapses that to 1000
+    C-backed Counter operations. The asymptotic complexity is the same
+    O(N × L), but the constant factor is substantially smaller.
+
+    Gaps in the alignment are included in the PPM (as '-' column probabilities)
+    but excluded from entropy and IC calculations. IC is penalised by the
+    fraction of non-gap bases at each position (WebLogo formula).
+
 Note on scope:
     This tool is a PROFILE SCANNER, not a motif discovery engine. It quantifies
     conservation across a pre-built alignment. For discovering unknown regulatory
     motifs from unaligned upstream sequences, use motif_discovery.py, which
     implements the Expectation-Maximization algorithm (log-odds + background
-    model, MEME-style OOPS model).
+    model, MEME-style OOPS model with bidirectional strand scanning and seed
+    clustering).
 
 License: MIT
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
+Note:
+    This module is part of ongoing research and is associated with an upcoming
+    publication. Please cite appropriately when used in derivative works.
+    See LICENSE file in the repository root for full license terms.
 
 Example Usage:
     $ python3 alignment_conservation_profiler.py -i alignment.fasta -o profile_matrix.tsv
@@ -40,10 +55,11 @@ Notes on Excel import:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 import math
 import sys
+from collections import Counter
 
 try:
     from Bio import SeqIO
@@ -64,6 +80,11 @@ def _build_profile(
     Ambiguous IUPAC characters (N, Y, R, W, etc.) are silently skipped.
     Gaps are legal and tracked in the PPM but excluded from entropy.
 
+    Uses ``zip(*sequences)`` + ``Counter`` for column-wise counting rather
+    than a nested Python loop. Counter's inner loop runs in C (CPython),
+    making this substantially faster for large alignments (hundreds of
+    sequences × hundreds of positions).
+
     Args:
         sequences: Non-empty list of equal-length uppercase strings.
 
@@ -77,10 +98,13 @@ def _build_profile(
     counts = {c: [0] * seq_len for c in valid_chars}
     max_bits = math.log2(4.0)
 
-    for seq in sequences:
-        for i, ch in enumerate(seq):
-            if ch in counts:
-                counts[ch][i] += 1
+    # Column-wise counting via zip(*sequences) + Counter.
+    # Each iteration yields one column (a tuple of n characters) and counts
+    # all characters in a single C-backed call, replacing the inner Python loop.
+    for i, column in enumerate(zip(*sequences)):
+        col_counts = Counter(column)
+        for c in valid_chars:
+            counts[c][i] = col_counts[c]  # Counter returns 0 for missing keys
 
     consensus_list = []
     ppm = {c: [0.0] * seq_len for c in valid_chars}
