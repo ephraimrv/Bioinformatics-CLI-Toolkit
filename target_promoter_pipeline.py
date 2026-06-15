@@ -10,13 +10,29 @@ orthologs with even a single amino acid substitution.
 
 This pipeline uses real sequence alignment (Smith-Waterman / BLOSUM62)
 to identify true evolutionary orthologs, then extracts their upstream
-regulatory regions for MEME motif discovery.
+regulatory regions for MEME motif discovery. Works on both prokaryotic
+and eukaryotic genomes without requiring separate scripts.
 
 WORKFLOW:
-    Step 1  Load query proteins from a GenBank file
-    Step 2  Align them against a target genome using Smith-Waterman
-    Step 3  Collect the locus tags of all hits above identity/coverage thresholds
-    Step 4  Extract upstream regions for those loci and write MEME-ready FASTA
+    Step 1  Load query proteins from a GenBank file (always treated as prokaryotic
+            for protein extraction; query itself can be eukaryotic, only the protein
+            extraction logic matters, not the coordinate system).
+    Step 2  Align them against a target genome using Smith-Waterman.
+    Step 3  Collect the locus tags of all hits above identity/coverage thresholds.
+    Step 4  Extract upstream regions for those loci using the target genome's mode
+            (auto-detected from each reference file).
+
+ORGANISM SUPPORT:
+    Prokaryotic target genomes:
+        Extracts upstream of CDS start (= ATG / translation start).
+        Auto-detected: CDS-only GenBank files = prokaryote.
+
+    Eukaryotic target genomes:
+        Extracts upstream of mRNA start (= Transcription Start Site = TSS).
+        Auto-detected: GenBank files with mRNA features = eukaryote.
+        Keyword matching still uses /product from CDS features (which always
+        have annotations). Coordinate extraction uses mRNA features (which
+        have correct TSS coordinates but often lack /product).
 
 WHY THIS REPLACES homology_extractor.py:
     The old script used:
@@ -25,24 +41,15 @@ WHY THIS REPLACES homology_extractor.py:
     the ortholog is silently missed. Real homology requires alignment,
     which is what gbk_ortholog_finder.py provides.
 
-EUKARYOTIC NOTE (FUTURE):
-    This pipeline is currently optimized for prokaryotic genomes, where
-    the CDS start coordinate directly precedes the promoter. For eukaryotic
-    genomes, universal_promoter_extractor.extract_by_loci() would need an
-    update to use the mRNA feature start (= Transcription Start Site)
-    rather than the CDS start, because eukaryotic CDS features begin at
-    the ATG, which is separated from the TSS by a 5' UTR and possibly introns.
-    This is documented in extract_by_loci()'s docstring.
-
 License: MIT
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
+Note:
+    This module is part of ongoing research and is associated with an upcoming
+    publication. Please cite appropriately when used in derivative works.
+    See LICENSE file in the repository root for full license terms.
 
-EXAMPLE USAGE:
-    # Blast C5 bacteriocin genes against ATCC 8293
+Example usage:
+    # Prokaryotic target (auto-detected)
     $ python3 target_promoter_pipeline.py \
         -q C5_genome.gbk \
         -r GCF_000014445_1_genomic.gbff \
@@ -50,26 +57,30 @@ EXAMPLE USAGE:
         -u 150 \
         --identity 0.35
 
-    # Bacteriocin-specific: apply mature core trimming, max-length filter
+    # Eukaryotic target (auto-detected)
+    $ python3 target_promoter_pipeline.py \
+        -q Arabidopsis_proteins.gbk \
+        -r Zea_mays.gbff \
+        -o maize_promoters.fasta \
+        -u 1000 \
+        --identity 0.40 \
+        --coverage 0.70
+
+    # Explicit mode (when auto-detection is unreliable)
+    $ python3 target_promoter_pipeline.py \
+        -q query.gbk -r target.gbff --mode eukaryote -u 1500
+
+    # Mixed directory of genomes (each auto-detected independently)
     $ python3 target_promoter_pipeline.py \
         -q C5_genome.gbk \
         -r references/ \
-        -o multi_genome_promoters.fasta \
-        --mature \
-        --max-length 150 \
-        --identity 0.40
-
-    # Conservative search: require 70% identity
-    $ python3 target_promoter_pipeline.py \
-        -q C5_genome.gbk \
-        -r GCA_007990165_1_genomic.gbff \
-        --identity 0.70 \
-        --coverage 0.80
+        -o all_promoters.fasta \
+        --mature --max-length 150 --identity 0.40
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import sys
 import argparse
@@ -143,8 +154,8 @@ examples:
         default=None,
         metavar="FASTA",
         help=(
-            "Output FASTA file for MEME motif discovery. "
-            "Default: targeted_promoters.fasta"
+            "Output FASTA file path for MEME motif discovery. "
+            "If omitted, saves to 'targeted_promoters.fasta' in the current directory."
         ),
     )
     parser.add_argument(
@@ -204,6 +215,18 @@ examples:
         metavar="AA",
         help="Skip query proteins shorter than this many amino acids. Default: 10",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "prokaryote", "eukaryote"],
+        default="auto",
+        help=(
+            "Organism mode for upstream extraction. "
+            "'auto' (default): detects from each reference file automatically. "
+            "'prokaryote': extracts upstream of CDS start (ATG). "
+            "'eukaryote': extracts upstream of mRNA start (TSS). "
+            "The query file is always treated as prokaryotic for protein extraction."
+        ),
+    )
 
     return parser
 
@@ -236,6 +259,7 @@ def main() -> None:
         f"  Mature core     : {'YES — leader peptides trimmed' if args.mature else 'NO'}",
         file=sys.stderr,
     )
+    print(f"  Organism mode   : {args.mode}", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
 
     # ── Step 1: Load query proteins ───────────────────────────────────────────
@@ -266,25 +290,56 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # find_orthologs accepts a single ref_path (file or directory is handled
-    # by stream_reference_files inside gbk_ortholog_finder).
-    hits = find_orthologs(
-        query_proteins=query_proteins,
-        ref_path=args.reference,
-        min_identity=args.identity,
-        use_mature=args.mature,
-        min_coverage=args.coverage,
-        coverage_mode="min",  # correct for bacteriocin/domain searches
-    )
+    # find_orthologs() in gbk_ortholog_finder.py calls SeqIO.parse() directly
+    # and expects a single file path — it does not handle directories.
+    # We resolve the directory here and call find_orthologs() per file,
+    # then aggregate all hits. This mirrors how Step 3 handles directories.
+    ref_files: list[Path] = []
+    if args.reference.is_dir():
+        for ext in ("*.gbk", "*.gbff"):
+            ref_files.extend(sorted(args.reference.rglob(ext)))
+        if not ref_files:
+            sys.exit(
+                f"[!] No GenBank files (.gbk / .gbff) found in: {args.reference}\n"
+                f"    Check the directory path and file extensions."
+            )
+        print(
+            f"    Reference is a directory — found {len(ref_files)} file(s).",
+            file=sys.stderr,
+        )
+    else:
+        ref_files = [args.reference]
+
+    all_hits = []
+    for ref_file in ref_files:
+        print(f"    Searching {ref_file.name}...", file=sys.stderr)
+        file_hits = find_orthologs(
+            query_proteins=query_proteins,
+            ref_path=ref_file,
+            min_identity=args.identity,
+            use_mature=args.mature,
+            min_coverage=args.coverage,
+            coverage_mode="min",  # correct for bacteriocin/domain searches
+        )
+        if file_hits:
+            print(f"      -> {len(file_hits)} hit(s) found.", file=sys.stderr)
+            all_hits.extend(file_hits)
+        else:
+            print(f"      -> No hits above threshold.", file=sys.stderr)
+
+    hits = all_hits
 
     if not hits:
         sys.exit(
             f"[!] No orthologs found above {args.identity*100:.0f}% identity / "
-            f"{args.coverage*100:.0f}% coverage.\n"
+            f"{args.coverage*100:.0f}% coverage in any reference file.\n"
             f"    Try lowering --identity or --coverage, or check your query file."
         )
 
-    print(f"    {len(hits)} ortholog hit(s) found.", file=sys.stderr)
+    print(
+        f"\n    {len(hits)} total ortholog hit(s) across all reference files.",
+        file=sys.stderr,
+    )
 
     # Report what was found
     for hit in sorted(hits, key=lambda h: (-h.identity, h.ref_locus)):
@@ -307,18 +362,7 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # Resolve reference files — extract_by_loci takes a single Path,
-    # so handle both single file and directory inputs
-    ref_files: list[Path] = []
-    if args.reference.is_dir():
-        for ext in ("*.gbk", "*.gbff"):
-            ref_files.extend(args.reference.rglob(ext))
-    else:
-        ref_files = [args.reference]
-
-    if not ref_files:
-        sys.exit(f"[!] No GenBank files found in reference path: {args.reference}")
-
+    # ref_files already resolved in Step 2 — reused here directly.
     extracted_count = 0
 
     try:
@@ -332,7 +376,9 @@ def main() -> None:
                     actual_up,
                     strand,
                     genome_label,
-                ) in extract_by_loci(ref_file, target_loci, args.upstream):
+                ) in extract_by_loci(
+                    ref_file, target_loci, args.upstream, mode=args.mode
+                ):
 
                     strand_symbol = "+" if strand == 1 else "-"
                     header = (
