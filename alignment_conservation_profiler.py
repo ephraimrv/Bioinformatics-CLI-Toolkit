@@ -171,7 +171,7 @@ def build_industrial_profile(
 
 
 def main() -> None:
-    parser = base_parser("Alignment Conservation Profiler")
+    parser = base_parser("Alignment Conservation Profiler (-i = FASTA file,-o = tsv)")
     args = parser.parse_args()
 
     print(
