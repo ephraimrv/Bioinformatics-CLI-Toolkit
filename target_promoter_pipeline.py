@@ -80,7 +80,7 @@ Example usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import sys
 import argparse
@@ -105,6 +105,15 @@ try:
 except ImportError as e:
     sys.exit(
         f"[!] Cannot import from universal_promoter_extractor.py.\n"
+        f"    Ensure it is in the same directory as this script.\n"
+        f"    Details: {e}"
+    )
+
+try:
+    from utils import wrap_fasta
+except ImportError as e:
+    sys.exit(
+        f"[!] Cannot import from utils.py.\n"
         f"    Ensure it is in the same directory as this script.\n"
         f"    Details: {e}"
     )
@@ -154,8 +163,8 @@ examples:
         default=None,
         metavar="FASTA",
         help=(
-            "Output FASTA file path for MEME motif discovery. "
-            "If omitted, saves to 'targeted_promoters.fasta' in the current directory."
+            "Output FASTA file for MEME motif discovery. "
+            "Default: targeted_promoters.fasta"
         ),
     )
     parser.add_argument(
@@ -362,12 +371,41 @@ def main() -> None:
         file=sys.stderr,
     )
 
+    # ── Step 3: Extract upstream regions ─────────────────────────────────────
+    print(
+        f"\n[Step 3] Extracting {args.upstream}bp upstream of identified loci...",
+        file=sys.stderr,
+    )
+
     # ref_files already resolved in Step 2 — reused here directly.
+    # TSV output: derived from FASTA output path unless explicitly set.
+    tsv_output = output.with_suffix(".tsv")
+
     extracted_count = 0
+    found_loci: set[str] = set()  # tracks which loci were found across ALL files
+
+    TSV_HEADER = "\t".join(
+        [
+            "locus_tag",
+            "genome_label",
+            "contig_id",
+            "product",
+            "strand",
+            "upstream_requested",
+            "upstream_extracted",
+        ]
+    )
 
     try:
-        with open(output, "w", encoding="utf-8") as out_file:
+        with (
+            open(output, "w", encoding="utf-8") as fasta_out,
+            open(tsv_output, "w", encoding="utf-8") as tsv_out,
+        ):
+            tsv_out.write(TSV_HEADER + "\n")
+
             for ref_file in ref_files:
+                file_count = 0
+
                 for (
                     seq_id,
                     locus,
@@ -377,25 +415,61 @@ def main() -> None:
                     strand,
                     genome_label,
                 ) in extract_by_loci(
-                    ref_file, target_loci, args.upstream, mode=args.mode
-                ):
+                    ref_file,
+                    target_loci,
+                    args.upstream,
+                    mode=args.mode,
+                    warn_missing=False,  # suppressed: loci absent from one
+                ):  # genome are expected in multi-file runs
 
                     strand_symbol = "+" if strand == 1 else "-"
+
+                    # FASTA — seq_id (contig) in header for traceability
                     header = (
-                        f">{locus} | {genome_label} | "
+                        f">{locus} | {seq_id} | {genome_label} | "
                         f"{actual_up}bp upstream | strand {strand_symbol} | "
                         f"{product[:45]}"
                     )
-                    out_file.write(f"{header}\n{seq}\n")
-                    extracted_count += 1
-                    print(
-                        f"      [Extracted] {locus} ({actual_up}bp, strand "
-                        f"{strand_symbol}) from {genome_label}",
-                        file=sys.stderr,
+                    fasta_out.write(f"{header}\n{wrap_fasta(seq)}\n")
+
+                    # TSV — one row per extracted region
+                    tsv_out.write(
+                        "\t".join(
+                            [
+                                locus,
+                                genome_label,
+                                seq_id,
+                                product,
+                                strand_symbol,
+                                str(args.upstream),
+                                str(actual_up),
+                            ]
+                        )
+                        + "\n"
                     )
+
+                    found_loci.add(locus)
+                    extracted_count += 1
+                    file_count += 1
+
+                # Per-file summary — one clean line instead of one line per locus
+                status = (
+                    f"{file_count} region(s) extracted" if file_count else "no matches"
+                )
+                print(f"      {ref_file.name:<45} {status}", file=sys.stderr)
 
     except ValueError as e:
         sys.exit(f"[!] Extraction error: {e}")
+
+    # Consolidated missing-loci report — only loci never found in ANY file
+    never_found = sorted(set(target_loci) - found_loci)
+    if never_found:
+        print(
+            f"\n  [!] {len(never_found)} locus tag(s) not found in any reference file:",
+            file=sys.stderr,
+        )
+        for tag in never_found:
+            print(f"        - {tag}", file=sys.stderr)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{'=' * 60}", file=sys.stderr)
@@ -404,7 +478,8 @@ def main() -> None:
     print(f"  Orthologs found    : {len(hits)}", file=sys.stderr)
     print(f"  Unique loci        : {len(target_loci)}", file=sys.stderr)
     print(f"  Regions extracted  : {extracted_count}", file=sys.stderr)
-    print(f"  Output written to  : {output.resolve()}", file=sys.stderr)
+    print(f"  FASTA written to   : {output.resolve()}", file=sys.stderr)
+    print(f"  TSV written to     : {tsv_output.resolve()}", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
 
     if extracted_count == 0:
