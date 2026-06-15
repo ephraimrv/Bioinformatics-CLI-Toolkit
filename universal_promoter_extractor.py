@@ -89,7 +89,14 @@ import argparse
 import re
 from pathlib import Path
 from typing import Iterator
-from Bio import SeqIO
+
+try:
+    from Bio import SeqIO
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 from utils import stream_reference_files
 
 # ── Mode constants ─────────────────────────────────────────────────────────────
@@ -346,6 +353,7 @@ def extract_by_loci(
     locus_tags: list[str],
     upstream_bp: int,
     mode: str = MODE_AUTO,
+    warn_missing: bool = True,
 ) -> Iterator[tuple[str, str, str, str, int, int, str]]:
     """Extract upstream regions for a specific list of locus tags.
 
@@ -367,14 +375,21 @@ def extract_by_loci(
         Pass 1 — ``CDS`` features: builds a {locus_tag: product} map for
                  all target loci. This populates product names since mRNA
                  features often lack /product qualifiers.
-        Pass 2 — ``mRNA`` features: for matching locus_tags, extracts
-                 upstream sequence relative to the mRNA start (= TSS).
+        Pass 2 — ``mRNA`` features: resolves the 5'-most TSS across all
+                 isoforms, then extracts upstream of that coordinate.
 
     Args:
-        gbk_path:    Path to the GenBank file to scan.
-        locus_tags:  Locus tags to extract. Duplicates are silently removed.
-        upstream_bp: Number of bases to extract upstream of the anchor coordinate.
-        mode:        Organism mode: ``"auto"``, ``"prokaryote"``, or ``"eukaryote"``.
+        gbk_path:     Path to the GenBank file to scan.
+        locus_tags:   Locus tags to extract. Duplicates are silently removed.
+        upstream_bp:  Number of bases to extract upstream of the anchor coordinate.
+        mode:         Organism mode: ``"auto"``, ``"prokaryote"``, or ``"eukaryote"``.
+        warn_missing: If ``True`` (default), print a warning to stderr listing
+                      any locus tags not found in this file after scanning
+                      completes. Set to ``False`` when calling from a pipeline
+                      that scans multiple files — locus tags absent from one
+                      file are expected if they belong to a different genome.
+                      The pipeline should track missing tags globally across
+                      all files and report once at the end.
 
     Yields:
         A 7-item tuple:
@@ -393,12 +408,15 @@ def extract_by_loci(
         ValueError: If the GenBank file cannot be parsed.
 
     Notes:
-        - If any requested locus tag is not found in the file, a warning is
-          printed to stderr after scanning completes, listing all missing tags.
+        - If ``warn_missing=True`` and any requested locus tag is not found,
+          a warning is printed to stderr after scanning, listing all missing tags.
         - Duplicate locus tags in the input list are silently deduplicated.
-        - If the same locus tag appears on multiple features of the same type
-          in the GenBank file (malformed annotation), only the first occurrence
-          is yielded and a warning is printed for subsequent duplicates.
+        - If the same locus tag appears on multiple CDS features in prokaryote
+          mode (malformed annotation), only the first occurrence is yielded
+          and a warning is printed.
+        - In eukaryote mode, multiple mRNA features per locus (alternative
+          isoforms) are handled by selecting the 5'-most TSS, not the first
+          feature seen.
         - Scanning stops early once all requested locus tags have been found.
     """
     resolved_mode = _detect_organism_mode(gbk_path) if mode == MODE_AUTO else mode
@@ -547,7 +565,7 @@ def extract_by_loci(
     except Exception as e:
         raise ValueError(f"Failed to parse {gbk_path.name}: {e}") from e
 
-    if remaining:
+    if remaining and warn_missing:
         print(
             f"\n      [!] Warning: {len(remaining)} locus tag(s) not found in "
             f"{gbk_path.name}:\n"
