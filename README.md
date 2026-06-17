@@ -29,13 +29,26 @@ Bioinformatics-CLI-Toolkit/
 
 ## Requirements and Installation
 
-Requires **Python 3.10+** (the toolkit uses `X | None` union-type syntax,
-which is not available on 3.9) and Biopython for GenBank parsing.
+The toolkit requires **Python 3.10+** and Biopython. Two installation paths:
+
+### Option A: Minimal install (pip, recommended for using the toolkit)
 
 ```bash
 git clone https://github.com/ephraimrv/Bioinformatics-CLI-Toolkit.git
 cd Bioinformatics-CLI-Toolkit
 pip install -r requirements.txt
+```
+
+### Option B: Full reproducible environment (conda, for developing/extending)
+
+If you want the exact research environment (including BLAST, MAFFT, HMMER, and
+other system bioinformatics tools), use conda/mamba:
+
+```bash
+git clone https://github.com/ephraimrv/Bioinformatics-CLI-Toolkit.git
+cd Bioinformatics-CLI-Toolkit
+mamba env create -f environment-full-rosalind.yml
+mamba activate rosalind
 ```
 
 ## Tool Overview (genomics_toolkit/)
