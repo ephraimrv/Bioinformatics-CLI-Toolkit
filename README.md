@@ -74,9 +74,17 @@ mamba activate rosalind
   strand handling and an optional quick motif scan.
 
 ### Comparative & Ortholog Analysis
-- **gbk_ortholog_finder.py** — Pairwise protein ortholog detection via
-  Smith-Waterman/BLOSUM62 alignment, with bacteriocin-aware coverage modes
-  and signal-peptide trimming.
+- **gbk_ortholog_finder.py** — Pairwise protein homolog detection via
+  Smith-Waterman/BLOSUM62 alignment, with eukaryote-aware isoform
+  deduplication, bacteriocin-aware coverage modes, and signal-peptide
+  trimming. (See script docstring for the homolog-vs-ortholog
+  distinction — confirming true orthology requires reciprocal-best-hit
+  or phylogenetic analysis.)
+  - **exact_match_ortholog_finder.py** — Exact-substring peptide search
+  across reference genomes (100% identity required). Faster and
+  stricter than alignment-based search — confirms presence of a known,
+  exact peptide core. For divergent homolog detection, use
+  gbk_ortholog_finder.py instead.
 - **conserved_annotation_scanner.py** — Core-proteome profiler: aggregates
   `/product` annotations across genomes and reports conserved genes above a
   genome-frequency threshold.
@@ -103,6 +111,15 @@ mamba activate rosalind
   Matrix and Information Content profile from a pre-built multiple sequence
   alignment.
 
+### Quick Utilities
+- **parse_ani.py** — Reformats raw FastANI TSV output into a clean,
+  headered TSV for easier review.
+- **quick_upstream.py** — Quick single-locus upstream-sequence harvester
+  for one GBFF file and one target locus. Locus tag, input file, and
+  upstream length are currently hardcoded for fast one-off use. For
+  flexible, multi-genome, or comparative upstream extraction, use
+  universal_promoter_extractor.py or gbk_promoter_finder.py instead.
+  
 ### Visualization (visuals/)
 Manuscript figure-generation scripts (e.g. functional-enrichment plots).
 Each is single-purpose and tied to a specific figure, not a general CLI tool.
