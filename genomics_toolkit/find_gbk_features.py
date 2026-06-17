@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
 
@@ -42,11 +41,11 @@ The TSV columns vary by mode and include verbose annotation fields when ``-v``
 is also used. Without ``-o``, all output is formatted text to the terminal.
 
 Note:
-    This script is part of ongoing research and is associated with an upcoming
-    publication. Correct attribution is requested when used in derivative works.
-    Released under the MIT License. See the LICENSE file in the repository root.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example Usage:
+Examples:
     Display the sequences contained in the file::
 
         python3 find_gbk_features.py -i genome.gbff --list-sequences
@@ -91,7 +90,7 @@ Example Usage:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 
 import sys
