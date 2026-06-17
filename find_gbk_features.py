@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
 
@@ -30,16 +31,20 @@ The ``--search-type`` flag controls where ``-q`` searches:
     - ``locus-exact``: exact match on /locus_tag= — use this to look up one
       specific gene before passing it to ``--context``.
 
+The ``--c1``/``--c2`` and ``--context`` modes are overlap-inclusive by
+default: a feature is shown if it touches the queried range at all, even
+partially (e.g. a megasynthase straddling a cluster boundary), tagged with
+a boundary status. Pass ``--strict-bounds`` to only show fully-enclosed
+features instead.
+
 When ``-o`` is specified, results are written as a TSV file instead of text.
 The TSV columns vary by mode and include verbose annotation fields when ``-v``
 is also used. Without ``-o``, all output is formatted text to the terminal.
 
-License: MIT
-
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
+Note:
+    This script is part of ongoing research and is associated with an upcoming
+    publication. Correct attribution is requested when used in derivative works.
+    Released under the MIT License. See the LICENSE file in the repository root.
 
 Example Usage:
     Display the sequences contained in the file::
@@ -77,11 +82,17 @@ Example Usage:
 
         python3 find_gbk_features.py -i genome.gbff --c1 50000 --c2 80000 --seq NZ_CP134351.1
         python3 find_gbk_features.py -i genome.gbff --c1 50000 --c2 80000 -o region.tsv
+
+    Restrict a coordinate or context search to fully-enclosed features only::
+
+        python3 find_gbk_features.py -i genome.gbff \\
+            --c1 50000 --c2 80000 --strict-bounds --seq NZ_CP134351.1
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.5.0"
+__version__ = "1.6.1"
+
 
 import sys
 import argparse
@@ -96,6 +107,12 @@ except ImportError:
         "ERROR: Biopython is required but not installed.\n"
         "       Install it with: pip install biopython"
     )
+
+
+# Long terminal dumps without -o are capped at this many lines rather than
+# flooding the user's scrollback. Matches the "truncated display (top 20)"
+# convention established in target_promoter_pipeline.py.
+TERMINAL_DISPLAY_LIMIT = 20
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -223,6 +240,18 @@ def get_args() -> argparse.Namespace:
         default=None,
         help="Coordinate-range end position (1-based, inclusive).",
     )
+    search.add_argument(
+        "--strict-bounds",
+        action="store_true",
+        help=(
+            "For --c1/--c2 and --context: only show features fully enclosed "
+            "within the queried range (the v1.5 behaviour). Default (v1.6+) "
+            "is overlap-inclusive — any feature touching the range is shown, "
+            "tagged full/clipped-left/clipped-right/spans-window — so genes "
+            "straddling a boundary (e.g. a megasynthase at the edge of an "
+            "antiSMASH cluster) are never silently dropped."
+        ),
+    )
 
     # ── Filters and output ────────────────────────────────────────────────────
     parser.add_argument(
@@ -302,6 +331,13 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if has_context and args.window < 1:
         sys.exit("\n[!] Error: --window must be a positive integer.\n")
+
+    if args.strict_bounds and not (has_coord or has_context):
+        print(
+            "[i] --strict-bounds has no effect without --c1/--c2 or --context; "
+            "ignoring.\n",
+            file=sys.stderr,
+        )
 
 
 # ── Feature helpers ───────────────────────────────────────────────────────────
@@ -413,40 +449,130 @@ def collect_cds(record) -> list[dict]:
     ]
 
 
+def _boundary_status(start: int, end: int, c1: int, c2: int) -> str:
+    """Classifies how a feature's coordinates relate to a queried range.
+
+    Used by ``run_coordinate_search`` and ``run_context_search`` once a
+    feature has already been matched under overlap-inclusive logic, to
+    indicate whether it is fully contained or straddles an edge.
+
+    Args:
+        start: Feature start (1-based).
+        end:   Feature end (1-based, inclusive).
+        c1:    Queried range start (1-based).
+        c2:    Queried range end (1-based).
+
+    Returns:
+        One of ``'full'``, ``'clipped-left'``, ``'clipped-right'``, or
+        ``'spans-window'`` (the feature is larger than the range and
+        engulfs it on both sides).
+    """
+    if start >= c1 and end <= c2:
+        return "full"
+    if start < c1 and end > c2:
+        return "spans-window"
+    if start < c1:
+        return "clipped-left"
+    return "clipped-right"
+
+
+def _record_meta_entry(record) -> dict[str, Any]:
+    """Builds the length/topology metadata used for circular-aware grouping.
+
+    Args:
+        record: A BioPython ``SeqRecord`` object.
+
+    Returns:
+        A dict with keys ``'length'`` (int) and ``'topology'``
+        (``'circular'`` or ``'linear'``, defaulting to ``'linear'`` when the
+        GenBank LOCUS line does not specify a topology).
+    """
+    topology = str(record.annotations.get("topology", "linear")).strip().lower()
+    return {"length": len(record.seq), "topology": topology}
+
+
 # ── Proximity grouping ────────────────────────────────────────────────────────
 
 
 def group_by_proximity(
     results: list[dict],
     gap_threshold: int = 50_000,
-) -> list[list[dict]]:
-    """Groups features into spatially adjacent clusters.
+    record_meta: dict[str, dict] | None = None,
+) -> list[dict]:
+    """Groups features into spatially adjacent clusters, per sequence record.
 
-    Features separated by more than ``gap_threshold`` bp are placed in
-    separate groups, preventing extraction suggestions from spanning the
-    whole chromosome when hits are far apart.
+    Features are first partitioned by ``record_id``, so hits on different
+    contigs or replicons (e.g. chromosome vs. plasmid) are never merged into
+    the same cluster regardless of their raw coordinate values — a v1.5 bug
+    where a hit at position 5,000 on one contig and 5,200 on another would
+    be treated as 200 bp apart. Within each partition, features separated by
+    more than ``gap_threshold`` bp are placed in separate groups.
+
+    If ``record_meta`` marks a record's topology as ``'circular'``, an
+    additional check merges the first and last linear groups when they are
+    actually close across the origin (e.g. a cluster sitting at
+    4,990,000-5,000,000 and 1-10,000 on a 5,000,000 bp circular replicon).
+    Only the global first/last groups are ever checked for this: on a single
+    circular origin, wraparound distance can only be shorter than linear
+    distance for the two coordinate extremes, never for an interior pair —
+    so no further passes are needed.
 
     Args:
-        results:       Feature dicts sortable by ``'start'``.
-        gap_threshold: Maximum gap in bp between consecutive hits in one group.
-                       Default: 50000.
+        results:       Feature dicts, each must include ``'record_id'`` and
+                        be sortable by ``'start'``/``'end'``.
+        gap_threshold: Maximum gap in bp between consecutive hits in one
+                        group. Default: 50000.
+        record_meta:   Optional ``{record_id: {'length': int, 'topology':
+                        str}}`` mapping, as produced by ``_record_meta_entry``.
+                        Records absent from this mapping, or marked
+                        ``'linear'``, use linear-only distance.
 
     Returns:
-        A list of groups, each containing spatially adjacent feature dicts.
+        A list of group dicts, each with keys ``'record_id'``, ``'features'``
+        (list of feature dicts), and ``'wraps_origin'`` (``True`` if this
+        group was formed by merging across a circular origin).
     """
     if not results:
         return []
 
-    sorted_hits = sorted(results, key=lambda r: r["start"])
-    groups = [[sorted_hits[0]]]
+    record_meta = record_meta or {}
+    all_groups: list[dict] = []
 
-    for feat in sorted_hits[1:]:
-        if feat["start"] - groups[-1][-1]["end"] <= gap_threshold:
-            groups[-1].append(feat)
-        else:
-            groups.append([feat])
+    by_record: dict[str, list[dict]] = {}
+    for feat in results:
+        by_record.setdefault(feat["record_id"], []).append(feat)
 
-    return groups
+    for record_id, feats in by_record.items():
+        sorted_hits = sorted(feats, key=lambda r: r["start"])
+        groups: list[list[dict]] = [[sorted_hits[0]]]
+
+        for feat in sorted_hits[1:]:
+            if feat["start"] - groups[-1][-1]["end"] <= gap_threshold:
+                groups[-1].append(feat)
+            else:
+                groups.append([feat])
+
+        meta = record_meta.get(record_id)
+        is_circular = bool(meta and meta.get("topology") == "circular")
+        genome_length = meta.get("length") if meta else None
+
+        wraps_origin = False
+        if is_circular and genome_length and len(groups) > 1:
+            wrap_dist = (groups[0][0]["start"] + genome_length) - groups[-1][-1]["end"]
+            if 0 <= wrap_dist <= gap_threshold:
+                groups = [groups[-1] + groups[0]] + groups[1:-1]
+                wraps_origin = True
+
+        for idx, g in enumerate(groups):
+            all_groups.append(
+                {
+                    "record_id": record_id,
+                    "features": g,
+                    "wraps_origin": wraps_origin and idx == 0,
+                }
+            )
+
+    return all_groups
 
 
 # ── TSV helpers ───────────────────────────────────────────────────────────────
@@ -456,6 +582,7 @@ def _build_feature_tsv_row(
     feat: dict,
     keyword: str | None = None,
     is_anchor: bool | None = None,
+    boundary: str | None = None,
     verbose: bool = False,
 ) -> dict[str, Any]:
     """Builds a flat row dict for TSV export from a feature dict.
@@ -464,6 +591,8 @@ def _build_feature_tsv_row(
         feat:      Feature dict from ``feature_to_dict()``.
         keyword:   If set, prepends a ``Keyword`` column.
         is_anchor: If set, prepends an ``Is_Anchor`` column (``'yes'``/``'no'``).
+        boundary:  If set, inserts a ``Boundary`` column after ``End``
+                   (one of the values returned by ``_boundary_status``).
         verbose:   If ``True``, appends GO terms, annotation note, and
                    antiSMASH-specific fields.
 
@@ -485,6 +614,14 @@ def _build_feature_tsv_row(
             "Gene": feat["gene_name"],
             "Start": feat["start"],
             "End": feat["end"],
+        }
+    )
+
+    if boundary is not None:
+        row["Boundary"] = boundary
+
+    row.update(
+        {
             "Strand": feat["strand"],
             "Product": feat["product"],
             "Protein_ID": feat["protein_id"],
@@ -536,14 +673,25 @@ def write_feature_table(features: list[dict], args, out) -> None:
 
     Standard mode shows locus tag, product, and position. Verbose mode
     (``-v``) adds protein accession, gene name, protein length, GO terms,
-    annotation notes, and antiSMASH biosynthetic role where present.
+    annotation notes, and antiSMASH biosynthetic role where present. A
+    ``Boundary`` line is shown whenever a feature carries a non-``'full'``
+    boundary status (set by ``run_coordinate_search``/``run_context_search``
+    under overlap-inclusive matching).
+
+    Output is capped at ``TERMINAL_DISPLAY_LIMIT`` features to avoid
+    flooding the terminal; a truncation notice is appended when applicable.
+    This function is only ever invoked in text mode (no ``-o``), so no
+    output-path check is needed here.
 
     Args:
         features: Feature dicts from ``feature_to_dict()``.
         args:     Parsed argument namespace (read for ``args.verbose``).
         out:      An open, writable file-like object.
     """
-    for i, r in enumerate(features, 1):
+    total = len(features)
+    display_features = features[:TERMINAL_DISPLAY_LIMIT]
+
+    for i, r in enumerate(display_features, 1):
         out.write(f"Feature {i}:\n")
         out.write(f"  Locus tag  : {r['locus']}\n")
         out.write(f"  Product    : {r['product']}\n")
@@ -551,6 +699,9 @@ def write_feature_table(features: list[dict], args, out) -> None:
             f"  Position   : {r['start']:,}\u2013{r['end']:,} bp "
             f"({r['strand']} strand)\n"
         )
+        boundary = r.get("boundary")
+        if boundary and boundary != "full":
+            out.write(f"  Boundary   : {boundary} (extends beyond queried range)\n")
 
         if args.verbose:
             if r["protein_id"]:
@@ -575,59 +726,161 @@ def write_feature_table(features: list[dict], args, out) -> None:
 
         out.write("\n")
 
+    remaining = total - len(display_features)
+    if remaining > 0:
+        out.write(
+            f"  ... {remaining:,} more feature(s) not shown.\n"
+            f"  Use -o FILE.tsv to export the full list.\n\n"
+        )
+
+
+def _write_capped_feature_lines(
+    features: list[dict],
+    out,
+    limit: int = TERMINAL_DISPLAY_LIMIT,
+    anchor_locus: str | None = None,
+) -> None:
+    """Writes a compact one-line-per-feature summary, capped to avoid flooding.
+
+    Shared by the text-mode branches of ``run_sequence_dump`` and
+    ``run_context_search``, which both render a dense locus/position/product
+    line per feature rather than the verbose block used by
+    ``write_feature_table``. A feature's ``'boundary'`` key, if present and
+    not ``'full'``, is shown as a trailing tag.
+
+    Args:
+        features:     Feature dicts to display, in the order to be shown.
+        out:          An open, writable file-like object.
+        limit:        Maximum number of lines to print before truncating.
+                      Default: ``TERMINAL_DISPLAY_LIMIT``.
+        anchor_locus: If set, the feature with this locus tag is marked
+                      with a leading ``>>>`` instead of blank indent.
+    """
+    display = features[:limit]
+
+    for f in display:
+        mark = ">>> " if anchor_locus and f["locus"] == anchor_locus else "    "
+        boundary = f.get("boundary")
+        tag = f"  [{boundary}]" if boundary and boundary != "full" else ""
+        out.write(
+            f"{mark}  {f['locus']:<25}  "
+            f"{f['start']:>10,}\u2013{f['end']:<10,}  "
+            f"({f['strand']})  {f['product'][:60]}{tag}\n"
+        )
+
+    remaining = len(features) - len(display)
+    if remaining > 0:
+        out.write(
+            f"\n    ... {remaining:,} more feature(s) not shown.\n"
+            f"    Use -o FILE.tsv to export the full list.\n"
+        )
+
 
 def write_extraction_suggestions(
     results: list[dict],
     input_path: Path,
     seq_filter: str | None,
     out,
+    record_meta: dict[str, dict] | None = None,
 ) -> None:
     """Writes proximity-grouped extraction command suggestions.
 
     Groups hits by a 50 kb gap threshold so spatially distant hits produce
-    separate commands rather than one chromosome-spanning range.
+    separate commands rather than one chromosome-spanning range. Hits are
+    always partitioned by sequence record first (see ``group_by_proximity``),
+    so a chromosome hit and a plasmid hit are never combined into a single
+    suggested range even if their raw coordinates happen to be close.
+
+    If ``record_meta`` marks a record as circular and a cluster spans the
+    origin, the suggested command uses ``extract_genome_region.py``'s
+    ``--circular`` mode (``--c1`` greater than ``--c2``, per its v2.2.0
+    contract of concatenating ``target[c1-1:contig_len] + target[0:c2]``)
+    rather than a single linear range.
 
     Args:
         results:     All matching feature dicts.
         input_path:  Path to the source GenBank file (used in the command).
         seq_filter:  The ``--seq`` value if active, otherwise ``None``.
         out:         An open, writable file-like object.
+        record_meta: Optional ``{record_id: {'length', 'topology'}}`` mapping
+                      from ``_record_meta_entry``, used for circular-aware
+                      grouping.
     """
     if len(results) < 2:
         return
 
-    groups = group_by_proximity(results)
+    groups = group_by_proximity(results, record_meta=record_meta)
     seq_flag = f" \\\n    --seq {seq_filter}" if seq_filter else ""
 
     if len(groups) == 1:
-        c1 = min(r["start"] for r in groups[0])
-        c2 = max(r["end"] for r in groups[0])
+        group = groups[0]
+        feats = group["features"]
+        c1 = min(r["start"] for r in feats)
+        c2 = max(r["end"] for r in feats)
         out.write("=" * 70 + "\n")
         out.write("SUGGESTED EXTRACTION COORDINATES (1-based):\n")
         out.write("=" * 70 + "\n\n")
+
+        this_seq_flag = (
+            f" \\\n    --seq {group['record_id']}" if not seq_filter else seq_flag
+        )
         out.write(
             f"  python3 extract_genome_region.py \\\n"
             f"    -i {input_path.name} \\\n"
-            f"    --c1 {c1} --c2 {c2}{seq_flag} \\\n"
+            f"    --c1 {c1} --c2 {c2}{this_seq_flag} \\\n"
             f"    --faa proteins.faa --fna region.fna\n"
         )
     else:
         out.write("=" * 70 + "\n")
         out.write(
             f"SUGGESTED EXTRACTION COORDINATES ({len(groups)} SEPARATE CLUSTERS):\n"
-            f"  Hits span {len(groups)} distinct genomic locations.\n"
+            f"  Hits span {len(groups)} distinct genomic location(s).\n"
         )
         out.write("=" * 70 + "\n\n")
+
         for idx, group in enumerate(groups, 1):
-            c1 = min(r["start"] for r in group)
-            c2 = max(r["end"] for r in group)
+            feats = group["features"]
+            this_seq_flag = (
+                f" \\\n      --seq {group['record_id']}" if not seq_filter else seq_flag
+            )
+
+            if group["wraps_origin"]:
+                meta = (record_meta or {}).get(group["record_id"], {})
+                genome_length = meta.get("length", 0)
+                # The merged group's features straddle the origin: split
+                # back into the "tail" (near genome_length) and "head"
+                # (near position 1) segments to build a wraparound command.
+                tail = [f for f in feats if f["start"] > genome_length / 2]
+                head = [f for f in feats if f["start"] <= genome_length / 2]
+                tail_c1 = min(f["start"] for f in tail)
+                head_c2 = max(f["end"] for f in head)
+                span_kb = (genome_length - tail_c1 + head_c2) / 1000
+                this_seq_flag = (
+                    f" \\\n      --seq {group['record_id']}"
+                    if not seq_filter
+                    else seq_flag
+                )
+                out.write(
+                    f"  Cluster {idx}  ({len(feats)} hit(s) on '{group['record_id']}', "
+                    f"~{span_kb:.1f} kb, SPANS THE CIRCULAR ORIGIN at "
+                    f"{tail_c1:,}\u2013end+start\u2013{head_c2:,} bp):\n"
+                    f"    python3 extract_genome_region.py \\\n"
+                    f"      -i {input_path.name} \\\n"
+                    f"      --c1 {tail_c1} --c2 {head_c2} --circular{this_seq_flag} \\\n"
+                    f"      --faa cluster{idx}_proteins.faa "
+                    f"--fna cluster{idx}_region.fna\n\n"
+                )
+                continue
+
+            c1 = min(r["start"] for r in feats)
+            c2 = max(r["end"] for r in feats)
             span_kb = (c2 - c1) / 1000
             out.write(
-                f"  Cluster {idx}  ({len(group)} hit(s), ~{span_kb:.1f} kb "
-                f"at {c1:,}\u2013{c2:,} bp):\n"
+                f"  Cluster {idx}  ({len(feats)} hit(s) on '{group['record_id']}', "
+                f"~{span_kb:.1f} kb at {c1:,}\u2013{c2:,} bp):\n"
                 f"    python3 extract_genome_region.py \\\n"
                 f"      -i {input_path.name} \\\n"
-                f"      --c1 {c1} --c2 {c2}{seq_flag} \\\n"
+                f"      --c1 {c1} --c2 {c2}{this_seq_flag} \\\n"
                 f"      --faa cluster{idx}_proteins.faa "
                 f"--fna cluster{idx}_region.fna\n\n"
             )
@@ -790,9 +1043,12 @@ def run_sequence_dump(args) -> None:
     """Lists every CDS feature on a contig when ``--seq`` is used alone.
 
     The human-readable alternative to scrolling through a raw GBFF file.
-    Without ``-o``, prints a formatted table to the terminal. With ``-o``,
-    writes a TSV with all base feature columns (plus verbose columns if
-    ``-v`` is also used).
+    Without ``-o``, prints a formatted table to the terminal, capped at
+    ``TERMINAL_DISPLAY_LIMIT`` lines (use ``-o`` for the full list — large
+    genomes such as Streptomyces can have thousands of CDS features, which
+    would otherwise flood the terminal scrollback). With ``-o``, writes a
+    TSV with all base feature columns (plus verbose columns if ``-v`` is
+    also used).
 
     Args:
         args: Parsed argument namespace. ``args.seq`` must be set.
@@ -820,19 +1076,14 @@ def run_sequence_dump(args) -> None:
             ]
             _write_tsv(tsv_rows, args.output)
         else:
-            # Text mode: write full table to terminal
+            # Text mode: write table to terminal, capped to avoid flooding
             print(
                 f"\n[*] Sequence: {record.id}  ({len(record.seq):,} bp)"
                 + (f"  [{org}]" if org else ""),
                 file=sys.stderr,
             )
             print(f"[*] {len(all_cds):,} CDS features.\n", file=sys.stderr)
-            for f in all_cds:
-                sys.stdout.write(
-                    f"    {f['locus']:<25}  "
-                    f"{f['start']:>10,}\u2013{f['end']:<10,}  "
-                    f"({f['strand']})  {f['product'][:60]}\n"
-                )
+            _write_capped_feature_lines(all_cds, sys.stdout)
             sys.stdout.write("\n")
             sys.stdout.write("=" * 70 + "\n")
             sys.stdout.write("EXTRACTION COMMANDS:\n")
@@ -866,6 +1117,14 @@ def run_context_search(args) -> None:
     Without ``-o``, prints a neighbourhood table to the terminal. With ``-o``,
     writes a TSV with an ``Is_Anchor`` column plus standard feature columns.
 
+    By default (overlap-inclusive), a feature is included if it touches the
+    window at all — even partially — and is tagged with a ``boundary``
+    status (``full``/``clipped-left``/``clipped-right``/``spans-window``).
+    Pass ``--strict-bounds`` to restore the v1.5 behaviour of only showing
+    features whose start falls inside the window (note: v1.5's check also
+    ignored the feature's end coordinate entirely, which under-matched on
+    the right edge and was not true enclosure either).
+
     Args:
         args: Parsed argument namespace. ``args.context`` must be set.
 
@@ -884,14 +1143,25 @@ def run_context_search(args) -> None:
         anchor_mid = (anchor["start"] + anchor["end"]) // 2
         win_c1 = max(1, anchor_mid - args.window)
         win_c2 = anchor_mid + args.window
-        in_window = [f for f in all_cds if win_c1 <= f["start"] <= win_c2]
 
+        if args.strict_bounds:
+            in_window = [f for f in all_cds if win_c1 <= f["start"] <= win_c2]
+        else:
+            in_window = [
+                f for f in all_cds if f["start"] <= win_c2 and f["end"] >= win_c1
+            ]
+
+        for f in in_window:
+            f["boundary"] = _boundary_status(f["start"], f["end"], win_c1, win_c2)
+
+        clipped = sum(1 for f in in_window if f["boundary"] != "full")
         print(
             f"\n[*] Context: '{args.context}' "
             f"({anchor['start']:,}\u2013{anchor['end']:,} bp)  "
             f"window \u00b1{args.window:,} bp  "
             f"\u2192 {win_c1:,}\u2013{win_c2:,}\n"
-            f"[*] {len(in_window)} feature(s) in window:\n",
+            f"[*] {len(in_window)} feature(s) in window"
+            + (f" ({clipped} straddling an edge):\n" if clipped else ":\n"),
             file=sys.stderr,
         )
 
@@ -900,6 +1170,7 @@ def run_context_search(args) -> None:
                 _build_feature_tsv_row(
                     f,
                     is_anchor=(f["locus"] == args.context),
+                    boundary=f["boundary"],
                     verbose=args.verbose,
                 )
                 for f in in_window
@@ -912,13 +1183,9 @@ def run_context_search(args) -> None:
                 f"(\u00b1{args.window:,} bp, "
                 f"{win_c1:,}\u2013{win_c2:,} bp)\n\n"
             )
-            for f in in_window:
-                mark = ">>> " if f["locus"] == args.context else "    "
-                sys.stdout.write(
-                    f"{mark}  {f['locus']:<25}  "
-                    f"{f['start']:>10,}\u2013{f['end']:<10,}  "
-                    f"({f['strand']})  {f['product'][:60]}\n"
-                )
+            _write_capped_feature_lines(
+                in_window, sys.stdout, anchor_locus=args.context
+            )
             sys.stdout.write(
                 f"\n{'=' * 70}\nTO EXTRACT THIS NEIGHBOURHOOD:\n{'=' * 70}\n\n"
                 f"  python3 extract_genome_region.py \\\n"
@@ -958,10 +1225,13 @@ def run_keyword_search(args) -> None:
 
     # Collect results per keyword
     results_by_query: dict[str, list[dict]] = {q: [] for q in queries}
+    record_meta: dict[str, dict] = {}
 
     for record in SeqIO.parse(args.input, "genbank"):
         if args.seq and record.id != args.seq:
             continue
+
+        record_meta[record.id] = _record_meta_entry(record)
 
         for feature in record.features:
             if feature.type != "CDS":
@@ -1022,7 +1292,9 @@ def run_keyword_search(args) -> None:
                 file=sys.stderr,
             )
             write_feature_table(results, args, sys.stdout)
-            write_extraction_suggestions(results, args.input, args.seq, sys.stdout)
+            write_extraction_suggestions(
+                results, args.input, args.seq, sys.stdout, record_meta=record_meta
+            )
 
         else:
             # Multiple keywords: grouped display
@@ -1050,11 +1322,20 @@ def run_keyword_search(args) -> None:
 
             # Suggestions span all hits combined
             all_results = [fd for q in queries for fd in results_by_query[q]]
-            write_extraction_suggestions(all_results, args.input, args.seq, sys.stdout)
+            write_extraction_suggestions(
+                all_results, args.input, args.seq, sys.stdout, record_meta=record_meta
+            )
 
 
 def run_coordinate_search(args) -> None:
-    """Shows all CDS features whose full coordinates fall within [c1, c2].
+    """Shows all CDS features overlapping the queried range [c1, c2].
+
+    By default (overlap-inclusive), a feature is included if it touches the
+    range at all, even partially — e.g. a megasynthase that engulfs the
+    whole range, or a gene clipped by either edge — and is tagged with a
+    ``Boundary`` status (``full``/``clipped-left``/``clipped-right``/
+    ``spans-window``). Pass ``--strict-bounds`` to restore the v1.5
+    behaviour of only showing features fully enclosed within [c1, c2].
 
     Without ``-o``, prints a formatted feature table to the terminal. With
     ``-o``, writes a TSV with base feature columns (plus verbose columns if
@@ -1064,10 +1345,13 @@ def run_coordinate_search(args) -> None:
         args: Parsed argument namespace. ``args.c1`` and ``args.c2`` must be set.
     """
     results = []
+    record_meta: dict[str, dict] = {}
 
     for record in SeqIO.parse(args.input, "genbank"):
         if args.seq and record.id != args.seq:
             continue
+
+        record_meta[record.id] = _record_meta_entry(record)
 
         for feature in record.features:
             if feature.type != "CDS":
@@ -1076,8 +1360,15 @@ def run_coordinate_search(args) -> None:
             start = int(feature.location.start) + 1
             end = int(feature.location.end)
 
-            if start >= args.c1 and end <= args.c2:
-                results.append(feature_to_dict(feature, record.id))
+            if args.strict_bounds:
+                match = start >= args.c1 and end <= args.c2
+            else:
+                match = start <= args.c2 and end >= args.c1
+
+            if match:
+                fd = feature_to_dict(feature, record.id)
+                fd["boundary"] = _boundary_status(start, end, args.c1, args.c2)
+                results.append(fd)
 
     if not results:
         print(
@@ -1088,17 +1379,24 @@ def run_coordinate_search(args) -> None:
         )
         return
 
+    clipped = sum(1 for r in results if r["boundary"] != "full")
     print(
-        f"\n[*] {len(results)} feature(s) in range " f"{args.c1:,}\u2013{args.c2:,}:\n",
+        f"\n[*] {len(results)} feature(s) in range {args.c1:,}\u2013{args.c2:,}"
+        + (f" ({clipped} straddling an edge):\n" if clipped else ":\n"),
         file=sys.stderr,
     )
 
     if args.output:
-        tsv_rows = [_build_feature_tsv_row(r, verbose=args.verbose) for r in results]
+        tsv_rows = [
+            _build_feature_tsv_row(r, boundary=r["boundary"], verbose=args.verbose)
+            for r in results
+        ]
         _write_tsv(tsv_rows, args.output)
     else:
         write_feature_table(results, args, sys.stdout)
-        write_extraction_suggestions(results, args.input, args.seq, sys.stdout)
+        write_extraction_suggestions(
+            results, args.input, args.seq, sys.stdout, record_meta=record_meta
+        )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
