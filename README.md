@@ -21,7 +21,7 @@ and a consistent `-i`/`-o` argparse interface where applicable.
 
 ```
 Bioinformatics-CLI-Toolkit/
-├── c5_research_pipeline/      # Comparative genomics & regulatory CLI tools
+├── genomics_toolkit/      # Comparative genomics & regulatory CLI tools
 │   ├── utils.py                # Shared parsing/validation helpers (not standalone)
 │   └── visuals/                 # Manuscript figure-generation scripts
 └── core_utilities/             # Legacy basic-sequence utilities (pending review)
@@ -38,7 +38,7 @@ cd Bioinformatics-CLI-Toolkit
 pip install -r requirements.txt
 ```
 
-## Tool Overview (c5_research_pipeline/)
+## Tool Overview (genomics_toolkit/)
 
 ### Discovery & Inspection
 - **find_gbk_features.py** — Search/browse GenBank features by keyword, locus
@@ -104,17 +104,17 @@ toolkit's current conventions.
 
 **Search a genome for features by keyword:**
 ```bash
-python3 c5_research_pipeline/gbk_scanner.py -i genome.gbff -q "bacteriocin"
+python3 genomics_toolkit/gbk_scanner.py -i genome.gbff -q "bacteriocin"
 ```
 
 **Extract a 150bp upstream regulatory region:**
 ```bash
-python3 c5_research_pipeline/gbk_promoter_finder.py -i genome.gbk -l ctg1_50 -u 150 -o promoter.fasta
+python3 genomics_toolkit/gbk_promoter_finder.py -i genome.gbk -l ctg1_50 -u 150 -o promoter.fasta
 ```
 
 **Find conserved genes across reference genomes (≥3 genomes, TSV + FASTA):**
 ```bash
-python3 c5_research_pipeline/conserved_annotation_scanner.py -i references/ --min_genomes 3 -o core_proteome.tsv -f
+python3 genomics_toolkit/conserved_annotation_scanner.py -i references/ --min_genomes 3 -o core_proteome.tsv -f
 ```
 
 ### Citation
