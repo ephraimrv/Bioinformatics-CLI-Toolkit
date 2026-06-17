@@ -7,7 +7,4 @@ authors:
 title: "Bioinformatics-CLI-Toolkit"
 version: 1.0.0
 date-released: 2026-06-04
-identifiers:
-  - type: doi
-    value: 10.5281/zenodo.20586542
 license: MIT
