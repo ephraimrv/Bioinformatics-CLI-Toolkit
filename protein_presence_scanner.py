@@ -1,5 +1,8 @@
-"""
-Interactive Protein Presence/Absence Scanner
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""Interactive Protein Presence/Absence Scanner
 
 An interactive REPL tool for scanning reference genomes for the presence
 or absence of a protein of interest.
@@ -26,19 +29,17 @@ Important:
     than raw genomic FASTA. Unannotated DNA files cannot be protein-searched
     without six-frame translation.
 
-License: MIT
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
-
-Example Usage:
+Examples:
     # Interactive scan against a directory of reference genomes
-    $ python3 proteome_hunter.py -i references/ -o presence_matrix.tsv
+    $ python3 protein_sequence_scanner.py -i references/ -o presence_matrix.tsv
 
     # For non-bacteriocin proteins (skip core trimming)
-    $ python3 proteome_hunter.py -i references/ --raw -o presence_matrix.tsv
+    $ python3 protein_sequence_scanner.py -i references/ --raw -o presence_matrix.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"

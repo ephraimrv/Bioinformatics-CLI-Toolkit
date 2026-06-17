@@ -1,5 +1,8 @@
-r"""
-Remote BLAST Runner
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+r"""Remote BLAST Runner
 
 Automates NCBI remote BLAST searches over sequences in a FASTA file.
 Handles three sequence selection modes, writes TSV output with column
@@ -54,14 +57,12 @@ NCBI USAGE POLICY:
        above your e-value threshold. Try a less stringent -e value.
     4. Use --debug to print the exact BLAST command and all server messages.
 
-License: MIT
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
-
-Example Usage:
+Examples:
     # Blast all sequences with defaults (blastp, nr, e-value 1e-10)
     $ python3 remote_blast.py -i proteins.faa
 

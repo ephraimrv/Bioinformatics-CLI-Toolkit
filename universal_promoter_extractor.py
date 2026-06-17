@@ -1,5 +1,8 @@
-r"""
-Universal Promoter Extractor
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+r"""Universal Promoter Extractor
 
 Extracts upstream regulatory regions (promoter sequences) from GenBank files
 for MEME motif discovery. Works on both prokaryotic and eukaryotic genomes
@@ -51,14 +54,12 @@ ALTERNATIVE SPLICING (ISOFORM HANDLING):
     When multiple isoforms are detected, a [Multi-isoform] message is printed
     to stderr showing how many isoforms were found and which TSS was used.
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example usage:
+Examples:
     # Prokaryote (auto-detected)
     $ python3 universal_promoter_extractor.py \
         -i C5_genome.gbk -o C5_promoters.fasta -u 150 \

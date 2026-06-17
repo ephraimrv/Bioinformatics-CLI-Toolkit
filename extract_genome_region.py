@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
 
@@ -84,20 +85,18 @@ PERFORMANCE:
     ``--genes-file``) are O(1), making the script suitable for extracting
     thousands of genes from a single record without redundant iteration.
 
-Output Format Reference:
+OUTPUT FORMAT REFERENCE:
     ``--faa FILE.faa``       Protein FASTA (one entry per non-truncated CDS)
     ``--fna FILE.fna``       Region DNA FASTA (one entry, includes intergenic)
     ``--gene-fna FILE.fna``  Gene DNA FASTA (one entry per non-truncated CDS)
     ``--gbk FILE.gbk``       Annotated GenBank with local coordinates
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example:
+Examples:
     Check what sequences are in the file::
 
         python3 extract_genome_region.py -i genome.gbff --list-sequences

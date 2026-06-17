@@ -1,5 +1,8 @@
-r"""
-Targeted Promoter Pipeline
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+r"""Targeted Promoter Pipeline
 
 A bridge script that connects gbk_ortholog_finder.py and
 universal_promoter_extractor.py into a single automated workflow.
@@ -51,14 +54,12 @@ WHY THIS REPLACES homology_extractor.py:
     the ortholog is silently missed. Real homology requires alignment,
     which is what gbk_ortholog_finder.py provides.
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example usage:
+Examples:
     # Prokaryotic target (auto-detected)
     $ python3 target_promoter_pipeline.py \
         -q C5_genome.gbk \

@@ -1,12 +1,17 @@
-"""
-Bioinformatics Standard Utilities
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
 
-Centralized utility functions for file routing, parsing, and sequence manipulation.
-Provides standardized handling for GenBank and FASTA data with integrated
-error validation and memory-safe processing.
+"""Bioinformatics Standard Utilities
 
-License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+Centralized utility functions for file routing, parsing, and sequence
+manipulation. Provides standardized handling for GenBank and FASTA data
+with integrated error validation and memory-safe processing.
+
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 """
 
 __author__ = "Jan Ephraim R. Vallente"

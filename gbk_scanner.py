@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
 
@@ -20,27 +21,25 @@ leftmost ``Keyword`` column runs key1 rows first, key2 rows next, and so on.
 A CDS feature that matches more than one keyword appears once per matching
 keyword so that no hit is missed.
 
-License: MIT
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
-
-Example:
+Examples:
     Search a single NCBI GBFF file for bacteriocin genes::
 
-        python3 bgc_explorer.py -i genome.gbff -q "bacteriocin"
+        python3 gbk_scanner.py -i genome.gbff -q "bacteriocin"
 
     Search a directory with three keywords and export results::
 
-        python3 bgc_explorer.py -i ./genomes/ \\
+        python3 gbk_scanner.py -i ./genomes/ \\
             -q "bacteriocin" "ABC transporter" "response regulator" \\
             -o results.tsv
 
     Search an antiSMASH region file for biosynthetic roles::
 
-        python3 bgc_explorer.py \\
+        python3 gbk_scanner.py \\
             -i C5_gnlProkkaNHJNNNGJ_1.region001.gbk \\
             -q "biosynthetic" "RiPP"
 """

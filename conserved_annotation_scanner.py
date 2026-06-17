@@ -1,5 +1,8 @@
-"""
-Conserved Annotation Scanner
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""Conserved Annotation Scanner
 
 Extracts and groups CDS product annotations across GenBank genomes to identify
 conserved genes. Acts as a text-based core proteome profiler: aggregates all
@@ -45,14 +48,12 @@ FILE KEY SAFETY:
     subdirectories (e.g., wild_type/genome.gbk and mutant/genome.gbk) from
     being merged into the same tracking entry.
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example Usage:
+Examples:
     # Standard run: Find genes conserved in at least 2 genomes, output TSV
     $ python3 conserved_annotation_scanner.py -i references/ --min_genomes 2 -o core.tsv
 

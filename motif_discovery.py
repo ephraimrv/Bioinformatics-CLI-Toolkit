@@ -1,5 +1,8 @@
-"""
-EM Motif Discovery
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+r"""EM Motif Discovery
 
 Discovers transcription factor binding sites and regulatory motifs in upstream
 sequences using Expectation-Maximization (MEME-style OOPS model).
@@ -86,19 +89,17 @@ PERFORMANCE — zip+Counter COLUMN PROFILING:
     nested Python loop. Counter runs in C (CPython), substantially reducing
     the number of Python-level operations for large sequence sets.
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example Usage:
+Examples:
     # Find top 3 motifs of default 15bp width
     $ python3 motif_discovery.py -i upstream.fasta --top 3 -o motifs.tsv
 
     # Custom width, more seeding, verbose
-    $ python3 motif_discovery.py -i upstream.fasta --top 3 --width 12 \\
+    $ python3 motif_discovery.py -i upstream.fasta --top 3 --width 12 \
       --seeds 80 --refine 30 -o motifs.tsv
 
     # Diverse seeds: reject seeds within 4 positions of a higher-scoring seed
@@ -107,7 +108,7 @@ Example Usage:
     # Stricter masking: only mask positions scoring >2.0 log-odds
     $ python3 motif_discovery.py -i upstream.fasta --top 3 --mask-threshold 2.0
 
-Notes:
+Caveats:
     - Input sequences do NOT need to be aligned (raw upstream FASTA is fine).
     - All sequences must be at least --width bp long.
     - Results are supporting calculations for MEME Suite, not a replacement.

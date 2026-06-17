@@ -1,5 +1,8 @@
-"""
-Comparative K-mer Frequency Regulatory Analyzer
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""Comparative K-mer Frequency Regulatory Analyzer
 
 Computes and compares normalized k-mer frequencies in the upstream regulatory
 regions of target and regulator genes to identify potential transcription
@@ -50,14 +53,12 @@ ENRICHMENT METRIC — LOG2 FOLD CHANGE (L2FC):
     Terminal output sorts by |L2FC| to surface the most biologically
     distinct k-mers. CPK values are retained in the TSV for reference.
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example Usage:
+Examples:
     # Basic run: Compare two genes with default k=6, show top 20 k-mers
     $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -o analysis.tsv
 

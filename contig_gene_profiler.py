@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
 """Extract genes from a specific contig in a BAKTA GBK/GBFF file.
 
 This module provides tools to extract and analyze genes from a specific contig
@@ -7,26 +10,24 @@ output formats (table, TSV) and can filter by feature type (CDS, rRNA, tRNA).
 
 Supports output with or without protein sequences for detailed downstream analysis.
 
-License: MIT
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
-
-Example:
+Examples:
     Extract genes from contig_2 and display as table::
 
-        python extract_contig_genes_v2.py C5_genome.gbff contig_2
+        python3 contig_gene_profiler.py C5_genome.gbff contig_2
 
     Extract CDS genes and save to TSV file with sequences::
 
-        python extract_contig_genes_v2.py C5_genome.gbff contig_2 \\
+        python3 contig_gene_profiler.py C5_genome.gbff contig_2 \\
             --output plasmid.tsv --format tsv
 
     Extract rRNA genes with sequences included::
 
-        python extract_contig_genes_v2.py C5_genome.gbff contig_1 \\
+        python3 contig_gene_profiler.py C5_genome.gbff contig_1 \\
             --type rRNA --output rrna_genes.tsv
 """
 

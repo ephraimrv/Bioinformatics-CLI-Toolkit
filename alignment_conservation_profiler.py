@@ -1,5 +1,8 @@
-"""
-Alignment Conservation Profiler
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""Alignment Conservation Profiler
 
 Builds a Position Probability Matrix (PPM) and Information Content profile
 from a multiple sequence alignment (MSA) in FASTA format.
@@ -36,21 +39,18 @@ Note on scope:
     model, MEME-style OOPS model with bidirectional strand scanning and seed
     clustering).
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example Usage:
+Example:
     $ python3 alignment_conservation_profiler.py -i alignment.fasta -o profile_matrix.tsv
 
 Notes on Excel import:
     TSV output uses UTF-8 encoding (plain, no BOM). When you open the file in
     Excel, it will automatically recognize the header row. If the Transform Data
     wizard appears, you can close it and Excel will display the data correctly.
-
 """
 
 __author__ = "Jan Ephraim R. Vallente"

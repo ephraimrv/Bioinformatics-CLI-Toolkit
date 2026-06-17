@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
 
@@ -55,14 +56,12 @@ Flag interaction — ``--mature``, ``--min-coverage``, and ``--coverage-mode``:
         - Whole-genome orthologs: ``--coverage-mode max --min-coverage 0.75``
         - General comparative: ``--coverage-mode min --min-coverage 0.50``
 
-License: MIT
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
-
-Example:
+Examples:
     Bacteriocin screen with signal peptide trimming and domain-centric search::
 
         python3 gbk_ortholog_finder.py \\

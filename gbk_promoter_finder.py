@@ -1,5 +1,8 @@
-"""
-GenBank Upstream Promoter Finder
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""GenBank Upstream Promoter Finder
 
 Extracts regulatory promoter regions from multi-contig GenBank assemblies.
 
@@ -7,15 +10,13 @@ This tool locates a target gene by its locus tag, calculates the strand
 orientation to extract the correct upstream sequence (applying reverse
 complementation where necessary), and scans the region for specific motif hits.
 
-License: MIT
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
-
-Example Usage:
-    $ python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta
+Example:
+    python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta
 """
 
 __author__ = "Jan Ephraim R. Vallente"
