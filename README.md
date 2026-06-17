@@ -1,74 +1,127 @@
 # Bioinformatics CLI Toolkit
 
-A command-line toolkit for genomic sequence processing, comparative genomics, and regulatory footprinting. 
+A command-line toolkit for genome inspection, comparative genomics, and regulatory
+motif discovery, built around GenBank-format assemblies. Originally developed
+during comparative genomic analysis of a bacteriocin locus in *Leuconostoc
+mesenteroides* C5, the tools are general-purpose and work on any GenBank file
+(NCBI GBFF, antiSMASH region files, Prokka/BAKTA-annotated assemblies).
 
-This repository contains general-purpose sequence manipulation utilities alongside a specialized comparative pipeline designed to analyze biosynthetic gene clusters (BGCs) and their transcriptional regulatory architectures across reference genomes.
+This is solo, ongoing research software associated with unpublished work in
+progress. Interfaces and outputs may change between commits.
+
+## Conventions
+
+Every script in this toolkit follows the same house style: `#!/usr/bin/env
+python3` shebang, an SPDX license header, a PEP 257 / Google-style module
+docstring (`Note:`, `Example(s):`, etc.), and `__author__`/`__email__`/
+`__version__` metadata only. All CLI tools use `python3` (never `python`)
+and a consistent `-i`/`-o` argparse interface where applicable.
 
 ## Repository Structure
 
-The toolkit is divided into two primary modules:
-
-* **`c5_research_pipeline/`**: Advanced comparative genomics scripts developed for the structural and regulatory analysis of bacteriocin loci in *Leuconostoc mesenteroides* C5.
-* **`core_utilities/`**: General-purpose sequence parsing tools for basic FASTA manipulation, open reading frame (ORF) extraction, and sequence statistics.
+```
+Bioinformatics-CLI-Toolkit/
+├── c5_research_pipeline/      # Comparative genomics & regulatory CLI tools
+│   ├── utils.py                # Shared parsing/validation helpers (not standalone)
+│   └── visuals/                 # Manuscript figure-generation scripts
+└── core_utilities/             # Legacy basic-sequence utilities (pending review)
+```
 
 ## Requirements and Installation
 
-The toolkit requires Python 3.9+ and relies on the `Biopython` library for GenBank file parsing. 
-
-Clone the repository and install the required dependencies:
+Requires **Python 3.10+** (the toolkit uses `X | None` union-type syntax,
+which is not available on 3.9) and Biopython for GenBank parsing.
 
 ```bash
-git clone [https://github.com/yourusername/Bioinformatics-CLI-Toolkit.git](https://github.com/yourusername/Bioinformatics-CLI-Toolkit.git)
+git clone https://github.com/ephraimrv/Bioinformatics-CLI-Toolkit.git
 cd Bioinformatics-CLI-Toolkit
 pip install -r requirements.txt
 ```
 
-## Key Tools Overview
-### Comparative Research Pipeline (c5_research_pipeline/)
-- conserved_annotation_scanner.py: A core proteome profiler that aggregates CDS annotations across multiple GenBank files to identify conserved gene groups based on an exact or minimum genome frequency threshold.
+## Tool Overview (c5_research_pipeline/)
 
-- cross_genome_keyword_scanner.py: Scans multiple genomes for targeted functional keywords and extracts the corresponding locus tags and protein sequences.
+### Discovery & Inspection
+- **find_gbk_features.py** — Search/browse GenBank features by keyword, locus
+  tag, coordinate range, or context window around an anchor gene. Suggests
+  ready-to-run extraction commands for hits, including circular-origin
+  wraparound clusters.
+- **gbk_scanner.py** — Keyword-based CDS scanner across a single file or a
+  directory of GenBank files (NCBI GBFF, antiSMASH, Prokka/BAKTA).
+- **contig_gene_profiler.py** — List/extract all genes on a specific contig
+  from a BAKTA-annotated assembly, with optional protein sequences.
 
-- ortholog_extractor.py: Calculates mature, membrane-inserting core peptides from pre-peptide sequences and uses them to identify and extract full-length orthologs from target assemblies.
+### Extraction
+- **extract_genome_region.py** — Extract a genomic region by coordinate,
+  locus-tag range, or whole contig, to GBK/FAA/FNA. Supports circular
+  origin-spanning extraction and pipeline integration via scanner TSV output.
+- **universal_promoter_extractor.py** — Extract upstream regulatory regions
+  for motif discovery. Auto-detects prokaryote (CDS-anchored) vs. eukaryote
+  (TSS-anchored via mRNA features, isoform-aware) genomes.
+- **gbk_promoter_finder.py** — Single-gene upstream promoter extraction with
+  strand handling and an optional quick motif scan.
 
-- upstream_sequence_extractor.py: Extracts exact upstream DNA coordinate blocks (promoter regions) using locus tags to evaluate regulatory structural conservation.
+### Comparative & Ortholog Analysis
+- **gbk_ortholog_finder.py** — Pairwise protein ortholog detection via
+  Smith-Waterman/BLOSUM62 alignment, with bacteriocin-aware coverage modes
+  and signal-peptide trimming.
+- **conserved_annotation_scanner.py** — Core-proteome profiler: aggregates
+  `/product` annotations across genomes and reports conserved genes above a
+  genome-frequency threshold.
+- **cross_genome_keyword_scanner.py** — Targeted keyword conservation search
+  across reference genomes, with TSV + matching FASTA export.
+- **protein_presence_scanner.py** — Interactive exact-substring presence/
+  absence scanner for a pasted peptide across a directory of reference
+  genomes. Bacterial signal-peptide trimming only — use `--raw` for
+  non-bacterial query peptides.
+- **target_promoter_pipeline.py** — Bridges ortholog detection and promoter
+  extraction into one workflow (alignment-based, not exact-match).
+- **remote_blast.py** — Automated NCBI remote BLAST runner (blastp/blastn/
+  blastx) with TSV output and rate-limit handling.
 
-- (Additional tools include BGC exploration, k-mer counting, regulon scanning, and consensus profiling).
+### Regulatory & Motif Analysis
+- **regulon_scanner.py** — Regex/IUPAC operator motif scanner across upstream
+  regions, with Benjamini-Hochberg FDR-corrected significance. Prokaryote-only
+  (anchors on CDS start, not the transcription start site).
+- **motif_discovery.py** — Simplified MEME-style Expectation-Maximization
+  motif discovery (bidirectional strand scanning, diversity-aware seeding).
+- **comparative_kmer_analyzer.py** — Canonical-k-mer, strand-aware enrichment
+  comparison (Log2 fold change) between two genes' upstream regions.
+- **alignment_conservation_profiler.py** — Builds a Position Probability
+  Matrix and Information Content profile from a pre-built multiple sequence
+  alignment.
 
-### Core Sequence Utilities (core_utilities/)
-- gc_genome.py: Calculates per-contig and whole-genome GC content, outputting both summary statistics and a TSV matrix.
+### Visualization (visuals/)
+Manuscript figure-generation scripts (e.g. functional-enrichment plots).
+Each is single-purpose and tied to a specific figure, not a general CLI tool.
 
-- stream_nuc_count.py: Calculates precise nucleotide frequencies (A, C, G, T) and anomalous base counts (N) using memory-efficient lazy evaluation.
+## Core Utilities (core_utilities/)
 
-- ORF_pipeline.py / ORF_genome_exhaustive.py: Identifies and extracts open reading frames from nucleotide sequences.
-
-- dna_rev_genome.py: Generates the 3'-to-5' reverse complement of an input FASTA.
-
-- DNA_transcripton_genome.py: Transcribes the coding strand of a DNA assembly into mRNA.
+Legacy general-purpose sequence scripts (GC content, ORF extraction, reverse
+complement, transcription). Pending review — not yet brought up to the
+toolkit's current conventions.
 
 ## Usage Examples
 
-Most tools share a consistent `argparse` interface requiring an input directory or file (`-i`) and an output file (`-o`).
+**Search a genome for features by keyword:**
+```bash
+python3 c5_research_pipeline/gbk_scanner.py -i genome.gbff -q "bacteriocin"
+```
 
-**Example 1: Identifying conserved genes across multiple reference genomes** \
-Aggregates CDS annotations across the provided reference directory and filters for genes present in at least three genomes. Outputs the results as a sorted TSV matrix and automatically generates a matching sequence-ready FASTA file.
+**Extract a 150bp upstream regulatory region:**
+```bash
+python3 c5_research_pipeline/gbk_promoter_finder.py -i genome.gbk -l ctg1_50 -u 150 -o promoter.fasta
+```
+
+**Find conserved genes across reference genomes (≥3 genomes, TSV + FASTA):**
 ```bash
 python3 c5_research_pipeline/conserved_annotation_scanner.py -i references/ --min_genomes 3 -o core_proteome.tsv -f
 ```
-**Example 2: Extracting a 150bp upstream regulatory region** \
-Extracts a specific coordinate block (150 base pairs) immediately upstream of the target gene's start codon to capture its regulatory footprint. The extracted promoter region is saved directly to a FASTA file.
-```bash
-python3 c5_research_pipeline/upstream_sequence_extractor.py -i genome.gbff -t LEUM_RS10400 -u 150 -o upstream.fasta
-```
-**Example 3: Extracting mature bacteriocin orthologs** \
-Calculates mature core peptides from target pre-peptides and extracts full-length homologous sequences across reference genomes. Aggregates identical hits into deduplicated FASTA headers.
-```bash
-python3 c5_research_pipeline/ortholog_extractor.py -t targets.faa -r references/ -o extracted_orthologs.faa
-```
-### Citation
-If you use this toolkit in your research, please cite the repository using the provided CITATION.cff metadata or the associated Zenodo DOI.
 
-Vallente, J. E. R. (2026). Bioinformatics-CLI-Toolkit (v1.0.0). Zenodo. 10.5281/zenodo.20586542
+### Citation
+Citation metadata is provided via `CITATION.cff` (GitHub renders a "Cite this
+repository" button from it automatically). A versioned Zenodo DOI will be
+added once the first official release is published — see the project's
+release notes for the current citable version.
 
 ### License
-This project is licensed under the MIT License.
+This project is licensed under the MIT License — see `LICENSE`.
