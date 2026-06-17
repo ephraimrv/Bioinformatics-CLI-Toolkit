@@ -20,6 +20,15 @@ Important:
     Use --raw to skip bacteriocin core trimming and search with the full
     pasted sequence. Required for non-bacteriocin targets.
 
+    SCOPE — bacterial cleavage logic only: calculate_mature_core() models
+    bacterial Sec/Tat/RiPP-leader cleavage rules. It has no knowledge of
+    eukaryotic secretory-pathway signal peptides (ER/Golgi-targeted),
+    which use different cleavage motifs entirely. There is no reliable
+    way to auto-detect this from a pasted sequence alone (it carries no
+    organism metadata), so always pass --raw when the query peptide is
+    not a bacterial bacteriocin/RiPP — otherwise the trimmed "core" may
+    be wrong and the exact-match search will silently miss real hits.
+
     Only GenBank files (.gbk, .gbff) and protein FASTA files (.faa) are
     supported as references. Raw nucleotide FASTA files (.fa, .fasta) contain
     DNA strings — protein probes will never match them. These files are
@@ -36,15 +45,15 @@ Note:
 
 Examples:
     # Interactive scan against a directory of reference genomes
-    $ python3 protein_sequence_scanner.py -i references/ -o presence_matrix.tsv
+    $ python3 protein_presence_scanner.py -i references/ -o presence_matrix.tsv
 
     # For non-bacteriocin proteins (skip core trimming)
-    $ python3 protein_sequence_scanner.py -i references/ --raw -o presence_matrix.tsv
+    $ python3 protein_presence_scanner.py -i references/ --raw -o presence_matrix.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import sys
 import argparse
@@ -155,7 +164,9 @@ def main() -> None:
         )
     else:
         print(
-            "[*] Mode: bacteriocin core trimming (use --raw to disable)",
+            "[*] Mode: bacteriocin core trimming (bacterial Sec/Tat/RiPP "
+            "cleavage rules; NOT valid for eukaryotic secretome proteins "
+            "— use --raw for those)",
             file=sys.stderr,
         )
 

@@ -1,5 +1,8 @@
-"""
-Genome-Wide Regulon Mapper
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""Genome-Wide Regulon Mapper
 
 Maps transcriptional networks by identifying operator motifs in upstream regions.
 
@@ -48,30 +51,36 @@ WHY RESULTS DIFFER:
 INTENDED USE:
     For prokaryotic regulatory network discovery where the motif footprint is
     known or suspected (lacticin operator boxes, SigmaA boxes, etc.) and binary
-    classification (matches the pattern or doesn't) is appropriate. For eukaryotic
-    enhancers or when you need PWM-style probabilistic scoring, use MEME/FIMO
-    directly.
+    classification (matches the pattern or doesn't) is appropriate.
 
-Eukaryotic note:
-    Prokaryotic promoters are tightly packed within 150-300bp upstream.
-    In eukaryotes, enhancers and distal regulatory elements can reside
-    1,000-50,000bp upstream. Use --upstream 5000 or higher for eukaryotic
-    genomes to avoid missing distal regulatory sites.
+PROKARYOTE-ONLY — NOT A WINDOW-SIZE PROBLEM:
+    This script anchors every upstream window on the CDS start (the
+    translation start / ATG), not on the Transcription Start Site (TSS).
+    In prokaryotes these coincide, since there is no 5' UTR separating
+    them. In eukaryotes they do not: the TSS sits upstream of the CDS
+    start, often separated by a 5' UTR that itself contains introns.
 
-License: MIT
-Reproducibility: Associated with upcoming research (manuscript in preparation).
+    Increasing --upstream on a eukaryotic genome does NOT fix this — it
+    just extracts a longer stretch of 5' UTR/intron sequence anchored at
+    the wrong coordinate, not the actual promoter. There is currently no
+    eukaryote mode here (unlike universal_promoter_extractor.py, which
+    resolves the TSS from mRNA features across isoforms). For eukaryotic
+    regulatory motif discovery: extract upstream regions with
+    universal_promoter_extractor.py or target_promoter_pipeline.py (both
+    TSS-anchored), then search that output with MEME/FIMO directly.
 
-Example Usage:
-    # Prokaryotic (default upstream is 150bp)
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
+
+Example:
     $ python3 regulon_scanner.py -i C5_genome.gbk -u 200 -m "GCGCAG[CT]G[GT]T[TA]AAAT" -o regulon.tsv
-
-    # Eukaryotic (increase upstream window significantly)
-    $ python3 regulon_scanner.py -i yeast_genome.gbff -u 2000 -m "TATAAA" -o regulon.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 import re
 import sys
@@ -79,6 +88,7 @@ import argparse
 import traceback
 from pathlib import Path
 from typing import Iterator
+from collections import Counter
 
 try:
     from Bio import SeqIO
@@ -99,6 +109,13 @@ def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
     Used to compute positional p-values for motif matches. A minimum floor of
     0.01 is applied to prevent division-by-zero on low-frequency bases.
 
+    Uses collections.Counter for the per-sequence tally (C-backed, faster than
+    a manual character loop at genome scale). Counter.update() will also tally
+    any non-ACGT characters present (e.g. 'N' runs in draft assemblies), but
+    the final total and per-base frequencies below restrict to A/C/G/T only —
+    matching the original behaviour of silently excluding ambiguous bases from
+    both the numerator and the denominator.
+
     Args:
         gbk_path:    Path to the GenBank file.
         upstream_bp: Upstream window size (must match the scan window).
@@ -106,7 +123,7 @@ def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
     Returns:
         Dict mapping "ACGT" → frequency, summing to ~1.0.
     """
-    counts: dict[str, int] = {"A": 0, "C": 0, "G": 0, "T": 0}
+    counts: Counter = Counter()
     for record in SeqIO.parse(gbk_path, "genbank"):
         for feature in record.features:
             if feature.type != "CDS":
@@ -119,11 +136,9 @@ def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
             else:
                 raw = record.seq[end : min(len(record.seq), end + upstream_bp)]
                 upstream = str(raw.reverse_complement()).upper()
-            for base in upstream:
-                if base in counts:
-                    counts[base] += 1
-    total = sum(counts.values()) or 1
-    return {b: max(c / total, 0.01) for b, c in counts.items()}
+            counts.update(upstream)
+    total = sum(counts[b] for b in "ACGT") or 1
+    return {b: max(counts[b] / total, 0.01) for b in "ACGT"}
 
 
 def _count_total_windows(gbk_path: Path, upstream_bp: int, motif_len: int) -> int:
@@ -291,7 +306,11 @@ def stream_regulon_hits(
 
     Args:
         gbk_path:       Path to the GenBank file.
-        regex_pattern:  IUPAC/regex motif string (IGNORECASE applied).
+        regex_pattern:  IUPAC/regex motif string. Matching is case-insensitive
+                        by uppercasing the pattern (once, at compile time) and
+                        every extracted upstream sequence (below) rather than
+                        passing re.IGNORECASE through the regex engine for
+                        every character compared across genome-wide windows.
         upstream_bp:    Number of bases upstream of each CDS start to extract.
 
     Yields:
@@ -300,13 +319,26 @@ def stream_regulon_hits(
         (rel_pos, matched_seq, motif_strand) tuples.
     """
     try:
-        safe_pattern = re.compile(f"(?=({regex_pattern}))", re.IGNORECASE)
+        safe_pattern = re.compile(f"(?=({regex_pattern.upper()}))")
     except re.error as e:
         raise ValueError(f"Invalid regex pattern: '{regex_pattern}'") from e
+
+    warned_eukaryote = False
 
     try:
         for record in SeqIO.parse(gbk_path, "genbank"):
             for feature in record.features:
+                if feature.type == "mRNA" and not warned_eukaryote:
+                    print(
+                        "[!] Warning: mRNA features detected — this looks like "
+                        "a eukaryotic genome. This script anchors upstream "
+                        "windows on CDS start, not the transcription start "
+                        "site (TSS), so the true promoter will likely be "
+                        "missed. See the module docstring (PROKARYOTE-ONLY) "
+                        "for details.",
+                        file=sys.stderr,
+                    )
+                    warned_eukaryote = True
                 if feature.type == "CDS":
 
                     locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
@@ -322,13 +354,13 @@ def stream_regulon_hits(
                         slice_start = max(0, start - upstream_bp)
                         slice_end = start  # not used for + strand coords but defined for consistency
                         actual_upstream = start - slice_start
-                        upstream_seq = str(record.seq[slice_start:start])
+                        upstream_seq = str(record.seq[slice_start:start]).upper()
                     else:
                         slice_start = end  # not used for - strand coords but defined for consistency
                         slice_end = min(len(record.seq), end + upstream_bp)
                         actual_upstream = slice_end - end
                         raw_seq = record.seq[end:slice_end]
-                        upstream_seq = str(raw_seq.reverse_complement())
+                        upstream_seq = str(raw_seq.reverse_complement()).upper()
 
                     if actual_upstream < upstream_bp:
                         print(
@@ -399,7 +431,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Genome-Wide Regulon Scanner\n"
         "Regex-Based Statistical Model\n"
-        "Intended for prokayotic genomes",
+        "Prokaryote-only (CDS-anchored, not TSS-anchored)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -409,9 +441,11 @@ def main() -> None:
         default=150,
         help=(
             "Bases upstream of each CDS to extract and scan. "
-            "Default: 150 (appropriate for prokaryotes). "
-            "For eukaryotes, enhancers can reside 1,000-50,000bp upstream — "
-            "use --upstream 5000 or higher for eukaryotic genomes."
+            "Default: 150 (appropriate for prokaryotes). This script is "
+            "prokaryote-only — it anchors on CDS start, not the TSS, so "
+            "increasing this value does not make it usable on eukaryotic "
+            "genomes. See universal_promoter_extractor.py for TSS-anchored "
+            "eukaryotic upstream extraction."
         ),
     )
     parser.add_argument(

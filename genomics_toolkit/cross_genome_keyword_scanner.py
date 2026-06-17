@@ -1,5 +1,8 @@
-"""
-Cross-Genome Keyword Conservation Scanner
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+"""Cross-Genome Keyword Conservation Scanner
 
 Scans multiple GenBank reference genomes for specific annotation keywords.
 Filters and returns only the genes (and their protein sequences) that are
@@ -43,14 +46,12 @@ FILE KEY SAFETY:
     being merged into the same tracking entry, which would produce silently
     wrong conservation counts.
 
-License: MIT
-
 Note:
-    This module is part of ongoing research and is associated with an upcoming
-    publication. Please cite appropriately when used in derivative works.
-    See LICENSE file in the repository root for full license terms.
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in
+    derivative works.
 
-Example Usage:
+Examples:
     # Standard run: Search for 'bacteriocin', output TSV
     $ python3 cross_genome_keyword_scanner.py -i references/ -k bacteriocin --min_genomes 3 -o core_annotations.tsv
 
