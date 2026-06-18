@@ -1,4 +1,5 @@
 # Bioinformatics CLI Toolkit
+[![DOI](https://zenodo.org/badge/1257183107.svg)](https://doi.org/10.5281/zenodo.20739391)
 
 A command-line toolkit for genome inspection, comparative genomics, and regulatory
 motif discovery, built around GenBank-format assemblies. Originally developed
@@ -147,11 +148,30 @@ python3 genomics_toolkit/gbk_promoter_finder.py -i genome.gbk -l ctg1_50 -u 150 
 python3 genomics_toolkit/conserved_annotation_scanner.py -i references/ --min_genomes 3 -o core_proteome.tsv -f
 ```
 
-### Citation
-Citation metadata is provided via `CITATION.cff` (GitHub renders a "Cite this
-repository" button from it automatically). A versioned Zenodo DOI will be
-added once the first official release is published — see the project's
-release notes for the current citable version.
+## Citation
 
-### License
-This project is licensed under the MIT License — see `LICENSE`.
+This toolkit is citable via Zenodo:
+
+**BibTeX:**
+```bibtex
+@software{vallente2026bioinformatics,
+  author = {Vallente, Jan Ephraim R.},
+  title = {Bioinformatics-CLI-Toolkit},
+  year = {2026},
+  publisher = {Zenodo},
+  doi = {10.5281/zenodo.20739391},
+  url = {https://zenodo.org/doi/10.5281/zenodo.20739391}
+}
+```
+
+**Plain text:**
+Vallente, J.E.R. (2026). Bioinformatics-CLI-Toolkit. *Zenodo*. https://doi.org/10.5281/zenodo.20739391
+
+**For citing a specific version (e.g., v1.0.0 in a paper):**
+Use the version-specific DOI: `10.5281/zenodo.20739392`
+
+Citation metadata is also provided in [`CITATION.cff`](CITATION.cff) (GitHub renders a "Cite this repository" button automatically).
+
+## License
+
+This project is licensed under the MIT License — see [`LICENSE`](LICENSE).
