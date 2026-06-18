@@ -11,7 +11,9 @@ This tool accepts a gap-aligned FASTA file and computes position-by-position
 conservation metrics for sequence logo generation and motif discovery. Outputs
 include the consensus sequence, PPM (probabilities of each nucleotide at each
 position), and gap-penalized Information Content using the WebLogo standard
-(Crooks et al. 2004).
+(Crooks et al. 2004), including the small-sample correction term e_n =
+(s-1)/(2 ln(2) n) without which conservation is systematically overestimated,
+especially for small alignments.
 
 Handles real-world alignments gracefully: ambiguous IUPAC characters (N, Y, R, W, etc.)
 are silently skipped without crashing the pipeline. Gaps in columns are penalized
@@ -44,6 +46,13 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
+    v1.3.0: Added the WebLogo small-sample correction term e_n to the IC
+    formula (previously omitted). Without it, IC was systematically
+    overestimated, most noticeably on small alignments — e.g. for a
+    10-sequence alignment, e_n ≈ 0.21 bits, a >10% error on the 2-bit DNA
+    scale. Numbers now match the published WebLogo/Crooks et al. 2004
+    formula exactly.
+
 Example:
     $ python3 alignment_conservation_profiler.py -i alignment.fasta -o profile_matrix.tsv
 
@@ -55,7 +64,7 @@ Notes on Excel import:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import math
 import sys
@@ -90,13 +99,19 @@ def _build_profile(
 
     Returns:
         (consensus_string, ppm_dict, information_content_list)
-        IC uses WebLogo gap-penalized formula (Crooks et al. 2004).
+        IC uses the WebLogo gap-penalized formula (Crooks et al. 2004),
+        including the small-sample correction term e_n = (s-1)/(2 ln(2) n),
+        with n taken as the non-gap count at each position (the effective
+        sample size used to estimate that position's base frequencies),
+        not the full alignment size — consistent with how entropy is
+        already computed per-column against the non-gap count.
     """
     seq_len = len(sequences[0])
     n = len(sequences)
     valid_chars = "ACGT-"
     counts = {c: [0] * seq_len for c in valid_chars}
     max_bits = math.log2(4.0)
+    small_sample_numerator = 3.0  # (s - 1) for s = 4 DNA symbols
 
     # Column-wise counting via zip(*sequences) + Counter.
     # Each iteration yields one column (a tuple of n characters) and counts
@@ -129,7 +144,16 @@ def _build_profile(
 
         consensus_list.append(winning_char)
         fraction_present = acgt_count / n
-        information_content[i] = max(0.0, (max_bits + entropy_sum) * fraction_present)
+        if acgt_count > 0:
+            small_sample_correction = small_sample_numerator / (
+                2 * math.log(2) * acgt_count
+            )
+        else:
+            small_sample_correction = 0.0
+        information_content[i] = max(
+            0.0,
+            (max_bits + entropy_sum - small_sample_correction) * fraction_present,
+        )
 
     return "".join(consensus_list), ppm, information_content
 
