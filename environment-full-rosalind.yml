@@ -321,4 +321,3 @@ dependencies:
   - zlib-ng=2.3.3=hceb46e0_1
   - zstd=1.5.7=hb78ec9c_6
 
-prefix: "/home/ephraim/miniforge3/envs/rosalind"
