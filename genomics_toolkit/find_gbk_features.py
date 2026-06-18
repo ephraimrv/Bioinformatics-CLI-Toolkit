@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
 
@@ -6,6 +7,12 @@
 Provides six exploration modes for .gbk and .gbff files without requiring
 manual inspection of raw GenBank format. Designed for use alongside
 extract_genome_region.py as part of a no-antiSMASH genome exploration workflow.
+
+Every mode operates on CDS features plus the standard non-coding-RNA gene
+types (tRNA, rRNA, tmRNA, ncRNA, misc_RNA — see ``VALID_FEATURE_TYPES``),
+so structural/regulatory RNA genes are just as searchable as protein-coding
+genes, not just on prokaryotic genomes but on eukaryotic ones where ncRNA
+annotation is often the only annotation a locus has.
 
 antiSMASH region boundaries (e.g. 53317-78823) are computed by antiSMASH and
 are not stored in the GBFF file. The ``--context`` mode provides a practical
@@ -23,8 +30,9 @@ keywords are given, results are shown grouped by keyword in the terminal and
 sorted by keyword order in the TSV file.
 
 The ``--search-type`` flag controls where ``-q`` searches:
-    - ``product`` (default): searches /product=, /gene_kind=, /gene_functions=,
-      /sec_met_domain=, and /note= — use this when you know what a gene *does*.
+    - ``product`` (default): searches /product=, /ncRNA_class=, /gene_kind=,
+      /gene_functions=, /sec_met_domain=, and /note= — use this when you know
+      what a gene *does*.
     - ``locus``: substring match on /locus_tag= — use this when you know part
       of a locus tag, e.g. ``-q "RHP56_RS003"`` to find all genes in that range.
     - ``locus-exact``: exact match on /locus_tag= — use this to look up one
@@ -44,6 +52,18 @@ Note:
     Associated with ongoing, unpublished research (manuscript in
     preparation). Correct attribution is requested when used in
     derivative works.
+
+    v1.7.0 changes (eukaryotic-compatibility pass): (1) every mode now
+    collects CDS plus standard non-coding-RNA feature types (tRNA, rRNA,
+    tmRNA, ncRNA, misc_RNA) instead of CDS alone — see
+    ``VALID_FEATURE_TYPES`` — so structural/regulatory RNA genes are
+    searchable too; (2) same-locus splice isoforms are collapsed to one
+    representative entry in terminal display (not in TSV export) so a
+    single heavily-spliced eukaryotic locus cannot consume the entire
+    ``TERMINAL_DISPLAY_LIMIT`` by itself; (3) ``--context``'s window
+    auto-scales for anchor genes larger than 5000 bp when ``--window`` is
+    not passed explicitly, since the bacterial-tuned 10000 bp default can
+    be smaller than the anchor gene itself on eukaryotic genomes.
 
 Examples:
     Display the sequences contained in the file::
@@ -90,7 +110,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.6.2"
+__version__ = "1.7.0"
 
 
 import sys
@@ -112,6 +132,26 @@ except ImportError:
 # flooding the user's scrollback. Matches the "truncated display (top 20)"
 # convention established in target_promoter_pipeline.py.
 TERMINAL_DISPLAY_LIMIT = 20
+
+# Feature types collected by every search/listing mode. CDS covers
+# protein-coding genes. tRNA/rRNA/tmRNA/ncRNA/misc_RNA cover the standard
+# INSDC non-coding-RNA gene types — without these, every mode in this
+# script is silently blind to tRNA/rRNA/ncRNA genes, which is a real gap
+# in any genome (prokaryotic rRNA operons and tRNA arrays are just as
+# searchable a target as protein-coding genes; eukaryotic genomes lean on
+# ncRNA/miRNA/snoRNA annotations even more heavily). Deliberately excludes
+# 'gene' and 'mRNA': both are wrapper/parent features that, in eukaryotic
+# GenBank files, share the same locus_tag and near-identical coordinates
+# as their child CDS/RNA feature — including them would double-count
+# every hit rather than add new information.
+VALID_FEATURE_TYPES = {"CDS", "tRNA", "rRNA", "tmRNA", "ncRNA", "misc_RNA"}
+RNA_FEATURE_TYPES = VALID_FEATURE_TYPES - {"CDS"}
+
+# Default --context neighbourhood half-width in bp, used only when the user
+# does not pass --window explicitly. Tuned for bacterial gene density;
+# see run_context_search() for the eukaryotic auto-scaling logic that
+# kicks in only when this default is actually in effect.
+DEFAULT_WINDOW = 10_000
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -150,7 +190,7 @@ def get_args() -> argparse.Namespace:
         "--list-sequences",
         action="store_true",
         help=(
-            "List all sequences in the file with CDS statistics: "
+            "List all sequences in the file with CDS/RNA statistics: "
             "length, gene count, locus tag range, and gene coordinate span. "
             "Add -o FILE.tsv to export as a table."
         ),
@@ -190,8 +230,8 @@ def get_args() -> argparse.Namespace:
         metavar="KEYWORD",
         help=(
             "One or more case-insensitive search terms. "
-            "Matched against /product=, /gene_kind=, /gene_functions=, "
-            "/sec_met_domain=, and /note=. "
+            "Matched against /product=, /ncRNA_class=, /gene_kind=, "
+            "/gene_functions=, /sec_met_domain=, and /note=. "
             'Enclose multi-word terms in quotes: -q "ABC transporter" "response regulator". '
             "For locus tag searches use --search-type locus or locus-exact."
         ),
@@ -221,9 +261,17 @@ def get_args() -> argparse.Namespace:
     search.add_argument(
         "--window",
         type=int,
-        default=10000,
+        default=None,
         metavar="BP",
-        help="Neighbourhood window in bp for --context mode. Default: 10000.",
+        help=(
+            "Neighbourhood window in bp for --context mode. Default: 10000 "
+            "(tuned for bacterial gene density). If left unset and the "
+            "anchor gene itself is large (>5000 bp — e.g. a typical "
+            "eukaryotic locus with introns), the window is auto-scaled to "
+            "3x the anchor's length with a warning printed to stderr. Pass "
+            "--window explicitly to disable auto-scaling and use your "
+            "exact value."
+        ),
     )
     search.add_argument(
         "--c1",
@@ -328,7 +376,7 @@ def validate_args(args: argparse.Namespace) -> None:
                 f"--c2 ({args.c2:,}).\n"
             )
 
-    if has_context and args.window < 1:
+    if has_context and args.window is not None and args.window < 1:
         sys.exit("\n[!] Error: --window must be a positive integer.\n")
 
     if args.strict_bounds and not (has_coord or has_context):
@@ -345,9 +393,11 @@ def validate_args(args: argparse.Namespace) -> None:
 def get_annotation_text(feature) -> str:
     """Builds a single searchable string from all annotation qualifiers.
 
-    Checks /product=, /gene_kind=, /gene_functions=, /sec_met_domain=, and
-    /note=, covering both NCBI GBFF (/product=) and antiSMASH region GBK
-    (/gene_kind=, /gene_functions=) in a single call.
+    Checks /product=, /ncRNA_class=, /gene_kind=, /gene_functions=,
+    /sec_met_domain=, and /note=, covering NCBI GBFF protein-coding genes
+    (/product=), NCBI non-coding RNA genes (/ncRNA_class=, e.g. "miRNA",
+    "snoRNA", "lncRNA"), and antiSMASH region GBK (/gene_kind=,
+    /gene_functions=) in a single call.
 
     Args:
         feature: A BioPython ``SeqFeature`` object.
@@ -357,6 +407,7 @@ def get_annotation_text(feature) -> str:
     """
     parts = [
         feature.qualifiers.get("product", [""])[0],
+        feature.qualifiers.get("ncRNA_class", [""])[0],
         feature.qualifiers.get("gene_kind", [""])[0],
         " ".join(feature.qualifiers.get("gene_functions", [])),
         " ".join(feature.qualifiers.get("sec_met_domain", [])),
@@ -368,8 +419,10 @@ def get_annotation_text(feature) -> str:
 def get_display_product(feature) -> str:
     """Returns the best available product description for display.
 
-    Prefers /product=. Falls back to /gene_kind= + /gene_functions= for
-    antiSMASH region files where /product= is absent on CDS features.
+    Prefers /product=. Falls back to /ncRNA_class= for non-coding RNA
+    features that lack a /product= value, then to /gene_kind= +
+    /gene_functions= for antiSMASH region files where neither is present
+    on CDS features.
 
     Args:
         feature: A BioPython ``SeqFeature`` object.
@@ -380,6 +433,10 @@ def get_display_product(feature) -> str:
     product = feature.qualifiers.get("product", [""])[0]
     if product:
         return product
+
+    ncrna_class = feature.qualifiers.get("ncRNA_class", [""])[0]
+    if ncrna_class:
+        return f"ncRNA ({ncrna_class})"
 
     kind = feature.qualifiers.get("gene_kind", [""])[0]
     funcs = feature.qualifiers.get("gene_functions", [])
@@ -403,7 +460,8 @@ def feature_to_dict(feature, record_id: str) -> dict:
     GBFF files and genome viewers.
 
     Args:
-        feature:   A BioPython ``SeqFeature`` object of type ``CDS``.
+        feature:   A BioPython ``SeqFeature`` object of a type in
+                   ``VALID_FEATURE_TYPES`` (CDS or a non-coding RNA type).
         record_id: The ID of the parent sequence record.
 
     Returns:
@@ -431,20 +489,24 @@ def feature_to_dict(feature, record_id: str) -> dict:
     }
 
 
-def collect_cds(record) -> list[dict]:
-    """Returns all CDS features from a record as standardized feature dicts.
+def collect_features(record) -> list[dict]:
+    """Returns all CDS/RNA features from a record as standardized feature dicts.
+
+    Includes every type in ``VALID_FEATURE_TYPES`` (CDS plus the standard
+    non-coding-RNA gene types) rather than CDS alone — see the module-level
+    comment on ``VALID_FEATURE_TYPES`` for why.
 
     Args:
         record: A BioPython ``SeqRecord`` object.
 
     Returns:
-        A list of feature dicts produced by ``feature_to_dict()``,
-        one per CDS feature in the record.
+        A list of feature dicts produced by ``feature_to_dict()``, one per
+        matching feature in the record.
     """
     return [
         feature_to_dict(feat, record.id)
         for feat in record.features
-        if feat.type == "CDS"
+        if feat.type in VALID_FEATURE_TYPES
     ]
 
 
@@ -667,6 +729,60 @@ def _write_tsv(rows: list[dict], output_path: Path) -> None:
 # ── Text output formatters ────────────────────────────────────────────────────
 
 
+def _dedupe_for_terminal_display(
+    features: list[dict], limit: int = TERMINAL_DISPLAY_LIMIT
+) -> tuple[list[dict], int, int]:
+    """Collapses same-locus isoforms to one representative entry, for display only.
+
+    Eukaryotic alternative splicing represents each transcript isoform as a
+    separate CDS feature sharing one ``/locus_tag`` (coordinates usually
+    differ between isoforms — exon skipping and alternative TSS/TES shift
+    them — but the shared locus_tag alone is enough to cause flooding).
+    Without collapsing, a single heavily-spliced human/plant locus with a
+    dozen-plus annotated isoforms can by itself consume the entire
+    ``TERMINAL_DISPLAY_LIMIT``, hiding every other distinct locus from view.
+
+    This affects terminal display ONLY. TSV export (``_write_tsv``) always
+    writes one row per input feature, preserving every isoform's own
+    ``protein_id``/``translation`` for downstream use.
+
+    Features with an empty ``locus`` (some annotation sources omit
+    ``/locus_tag``) are never collapsed against each other — an empty
+    string is not a real shared identifier, and collapsing on it would
+    incorrectly merge unrelated, distinctly-located features into one
+    displayed entry.
+
+    Args:
+        features: Feature dicts, in the order they should be considered
+                   (first-seen feature per locus is the one kept/shown).
+        limit:    Maximum number of distinct loci to return for display.
+
+    Returns:
+        A tuple of ``(display_features, total_unique, isoforms_collapsed)``:
+        ``display_features`` is capped at ``limit`` entries (one per
+        locus); ``total_unique`` is the count of distinct displayable
+        entries across ALL input features, before the cap is applied;
+        ``isoforms_collapsed`` is how many extra same-locus features were
+        hidden from view (0 if no locus had more than one feature).
+    """
+    seen_loci: set[str] = set()
+    deduped: list[dict] = []
+    isoforms_collapsed = 0
+
+    for f in features:
+        locus = f["locus"]
+        if locus:
+            if locus in seen_loci:
+                isoforms_collapsed += 1
+                continue
+            seen_loci.add(locus)
+        deduped.append(f)
+
+    total_unique = len(deduped)
+    display_features = deduped[:limit]
+    return display_features, total_unique, isoforms_collapsed
+
+
 def write_feature_table(features: list[dict], args, out) -> None:
     """Writes a formatted feature list to ``out``.
 
@@ -677,8 +793,13 @@ def write_feature_table(features: list[dict], args, out) -> None:
     boundary status (set by ``run_coordinate_search``/``run_context_search``
     under overlap-inclusive matching).
 
-    Output is capped at ``TERMINAL_DISPLAY_LIMIT`` features to avoid
-    flooding the terminal; a truncation notice is appended when applicable.
+    Same-locus isoforms (alternative splice variants sharing one
+    ``/locus_tag``) are collapsed to a single representative entry before
+    the ``TERMINAL_DISPLAY_LIMIT`` cap is applied — see
+    ``_dedupe_for_terminal_display`` — so a heavily-spliced eukaryotic locus
+    cannot by itself consume the entire display budget. Export via ``-o``
+    to see every individual isoform.
+
     This function is only ever invoked in text mode (no ``-o``), so no
     output-path check is needed here.
 
@@ -687,8 +808,9 @@ def write_feature_table(features: list[dict], args, out) -> None:
         args:     Parsed argument namespace (read for ``args.verbose``).
         out:      An open, writable file-like object.
     """
-    total = len(features)
-    display_features = features[:TERMINAL_DISPLAY_LIMIT]
+    display_features, total_unique, isoforms_collapsed = _dedupe_for_terminal_display(
+        features
+    )
 
     for i, r in enumerate(display_features, 1):
         out.write(f"Feature {i}:\n")
@@ -725,10 +847,17 @@ def write_feature_table(features: list[dict], args, out) -> None:
 
         out.write("\n")
 
-    remaining = total - len(display_features)
+    if isoforms_collapsed > 0:
+        out.write(
+            f"  [{isoforms_collapsed:,} additional same-locus isoform(s) "
+            f"collapsed for display \u2014 use -o FILE.tsv for every "
+            f"individual feature]\n\n"
+        )
+
+    remaining = total_unique - len(display_features)
     if remaining > 0:
         out.write(
-            f"  ... {remaining:,} more feature(s) not shown.\n"
+            f"  ... {remaining:,} more unique locus/loci not shown.\n"
             f"  Use -o FILE.tsv to export the full list.\n\n"
         )
 
@@ -747,6 +876,10 @@ def _write_capped_feature_lines(
     ``write_feature_table``. A feature's ``'boundary'`` key, if present and
     not ``'full'``, is shown as a trailing tag.
 
+    Same-locus isoforms are collapsed to one representative line before the
+    ``limit`` cap is applied — see ``_dedupe_for_terminal_display`` — for
+    the same reason as in ``write_feature_table``.
+
     Args:
         features:     Feature dicts to display, in the order to be shown.
         out:          An open, writable file-like object.
@@ -755,7 +888,9 @@ def _write_capped_feature_lines(
         anchor_locus: If set, the feature with this locus tag is marked
                       with a leading ``>>>`` instead of blank indent.
     """
-    display = features[:limit]
+    display, total_unique, isoforms_collapsed = _dedupe_for_terminal_display(
+        features, limit=limit
+    )
 
     for f in display:
         mark = ">>> " if anchor_locus and f["locus"] == anchor_locus else "    "
@@ -767,10 +902,16 @@ def _write_capped_feature_lines(
             f"({f['strand']})  {f['product'][:60]}{tag}\n"
         )
 
-    remaining = len(features) - len(display)
+    if isoforms_collapsed > 0:
+        out.write(
+            f"\n    [{isoforms_collapsed:,} additional same-locus isoform(s) "
+            f"collapsed for display \u2014 use -o FILE.tsv for every feature]\n"
+        )
+
+    remaining = total_unique - len(display)
     if remaining > 0:
         out.write(
-            f"\n    ... {remaining:,} more feature(s) not shown.\n"
+            f"\n    ... {remaining:,} more unique locus/loci not shown.\n"
             f"    Use -o FILE.tsv to export the full list.\n"
         )
 
@@ -889,14 +1030,17 @@ def write_extraction_suggestions(
 
 
 def run_list_sequences(args) -> None:
-    """Lists every sequence in the file with CDS statistics.
+    """Lists every sequence in the file with CDS/RNA statistics.
 
-    Shows sequence ID, length, organism, CDS count, first and last locus tag,
-    and the coordinate span of the coding region.
+    Shows sequence ID, length, organism, CDS count, RNA feature count
+    (tRNA/rRNA/ncRNA/etc.), first and last locus tag, and the coordinate
+    span of the coding region. Locus tag range and coordinate span are
+    always CDS-based (the protein-coding gene locus_tag series), even when
+    RNA features are also present.
 
     When ``-o`` is specified, writes a TSV with columns: ``Sequence_ID``,
-    ``Length_bp``, ``Organism``, ``CDS_Count``, ``First_Tag``, ``Last_Tag``,
-    ``Gene_Start``, ``Gene_End``.
+    ``Length_bp``, ``Organism``, ``CDS_Count``, ``RNA_Count``, ``First_Tag``,
+    ``Last_Tag``, ``Gene_Start``, ``Gene_End``.
 
     Args:
         args: Parsed argument namespace.
@@ -908,7 +1052,9 @@ def run_list_sequences(args) -> None:
     for record in SeqIO.parse(args.input, "genbank"):
         org = record.annotations.get("organism", "")
         cds_features = [f for f in record.features if f.type == "CDS"]
+        rna_features = [f for f in record.features if f.type in RNA_FEATURE_TYPES]
         n_cds = len(cds_features)
+        n_rna = len(rna_features)
 
         if cds_features:
             locus_tags = [
@@ -930,8 +1076,9 @@ def run_list_sequences(args) -> None:
             + (f"  [{org}]" if org else "")
         )
         print(
-            f"    {n_cds:,} CDS  |  "
-            f"tags: {first_tag} \u2192 {last_tag}  |  "
+            f"    {n_cds:,} CDS"
+            + (f"  |  {n_rna:,} RNA (tRNA/rRNA/ncRNA/etc.)" if n_rna else "")
+            + f"  |  tags: {first_tag} \u2192 {last_tag}  |  "
             f"genes: {gene_start:,}\u2013{gene_end:,} bp"
         )
         print()
@@ -943,6 +1090,7 @@ def run_list_sequences(args) -> None:
                 "Length_bp": len(record.seq),
                 "Organism": org,
                 "CDS_Count": n_cds,
+                "RNA_Count": n_rna,
                 "First_Tag": first_tag,
                 "Last_Tag": last_tag,
                 "Gene_Start": gene_start,
@@ -977,7 +1125,7 @@ def run_list_products(args) -> None:
         SystemExit: If ``--seq`` is specified but the sequence ID is not found.
     """
     counter: Counter = Counter()
-    total_cds = 0
+    total_features = 0
     hypo_count = 0
     seq_scanned = 0
 
@@ -987,9 +1135,9 @@ def run_list_products(args) -> None:
         seq_scanned += 1
 
         for feature in record.features:
-            if feature.type != "CDS":
+            if feature.type not in VALID_FEATURE_TYPES:
                 continue
-            total_cds += 1
+            total_features += 1
             product = get_display_product(feature)
 
             if "hypothetical" in product.lower():
@@ -1009,7 +1157,7 @@ def run_list_products(args) -> None:
 
     scope = f"sequence '{args.seq}'" if args.seq else f"'{args.input.name}'"
     print(f"\n[*] Product annotations in {scope}")
-    print(f"[*] Total CDS scanned: {total_cds:,}")
+    print(f"[*] Total CDS/RNA features scanned: {total_features:,}")
     print(
         f"[*] Excluded {hypo_count:,} 'hypothetical protein' entries "
         f'(use -q "hypothetical" to search for them)'
@@ -1039,12 +1187,12 @@ def run_list_products(args) -> None:
 
 
 def run_sequence_dump(args) -> None:
-    """Lists every CDS feature on a contig when ``--seq`` is used alone.
+    """Lists every CDS/RNA feature on a contig when ``--seq`` is used alone.
 
     The human-readable alternative to scrolling through a raw GBFF file.
     Without ``-o``, prints a formatted table to the terminal, capped at
     ``TERMINAL_DISPLAY_LIMIT`` lines (use ``-o`` for the full list — large
-    genomes such as Streptomyces can have thousands of CDS features, which
+    genomes such as Streptomyces can have thousands of features, which
     would otherwise flood the terminal scrollback). With ``-o``, writes a
     TSV with all base feature columns (plus verbose columns if ``-v`` is
     also used).
@@ -1059,7 +1207,7 @@ def run_sequence_dump(args) -> None:
         if record.id != args.seq:
             continue
 
-        all_cds = collect_cds(record)
+        all_features = collect_features(record)
         org = record.annotations.get("organism", "")
 
         if args.output:
@@ -1067,11 +1215,11 @@ def run_sequence_dump(args) -> None:
             print(
                 f"\n[*] {record.id}  ({len(record.seq):,} bp"
                 + (f", {org})" if org else ")")
-                + f"\n[*] {len(all_cds):,} CDS features.",
+                + f"\n[*] {len(all_features):,} CDS/RNA features.",
                 file=sys.stderr,
             )
             tsv_rows = [
-                _build_feature_tsv_row(f, verbose=args.verbose) for f in all_cds
+                _build_feature_tsv_row(f, verbose=args.verbose) for f in all_features
             ]
             _write_tsv(tsv_rows, args.output)
         else:
@@ -1081,8 +1229,8 @@ def run_sequence_dump(args) -> None:
                 + (f"  [{org}]" if org else ""),
                 file=sys.stderr,
             )
-            print(f"[*] {len(all_cds):,} CDS features.\n", file=sys.stderr)
-            _write_capped_feature_lines(all_cds, sys.stdout)
+            print(f"[*] {len(all_features):,} CDS/RNA features.\n", file=sys.stderr)
+            _write_capped_feature_lines(all_features, sys.stdout)
             sys.stdout.write("\n")
             sys.stdout.write("=" * 70 + "\n")
             sys.stdout.write("EXTRACTION COMMANDS:\n")
@@ -1124,6 +1272,18 @@ def run_context_search(args) -> None:
     ignored the feature's end coordinate entirely, which under-matched on
     the right edge and was not true enclosure either).
 
+    Window resolution: ``--window`` defaults to ``None`` at the CLI level
+    specifically so this function can tell "user did not pass --window"
+    apart from "user explicitly passed --window 10000" — checking the
+    resolved value against the default number would treat both cases as
+    identical and silently override an intentional choice. When truly
+    unset and the anchor gene's own length exceeds 5000 bp (a typical
+    bacterial CDS is far smaller; a typical eukaryotic locus with introns
+    routinely exceeds it), the window is auto-scaled to 3x the anchor's
+    length so eukaryotic users aren't told "no neighbours" just because
+    the default window doesn't even span the anchor gene itself. Passing
+    ``--window`` explicitly always disables auto-scaling.
+
     Args:
         args: Parsed argument namespace. ``args.context`` must be set.
 
@@ -1134,20 +1294,38 @@ def run_context_search(args) -> None:
         if args.seq and record.id != args.seq:
             continue
 
-        all_cds = collect_cds(record)
-        anchor = next((f for f in all_cds if f["locus"] == args.context), None)
+        all_features = collect_features(record)
+        anchor = next((f for f in all_features if f["locus"] == args.context), None)
         if anchor is None:
             continue
 
+        user_set_window = args.window is not None
+        window = args.window if user_set_window else DEFAULT_WINDOW
+
+        if not user_set_window:
+            anchor_len = anchor["end"] - anchor["start"]
+            if anchor_len > 5000:
+                scaled = anchor_len * 3
+                if scaled > window:
+                    print(
+                        f"[!] Anchor '{args.context}' spans {anchor_len:,} bp "
+                        f"\u2014 the default \u00b1{window:,} bp window would not "
+                        f"even cover the anchor gene itself. Auto-scaling to "
+                        f"\u00b1{scaled:,} bp. Pass --window explicitly to "
+                        f"override.",
+                        file=sys.stderr,
+                    )
+                    window = scaled
+
         anchor_mid = (anchor["start"] + anchor["end"]) // 2
-        win_c1 = max(1, anchor_mid - args.window)
-        win_c2 = anchor_mid + args.window
+        win_c1 = max(1, anchor_mid - window)
+        win_c2 = anchor_mid + window
 
         if args.strict_bounds:
-            in_window = [f for f in all_cds if win_c1 <= f["start"] <= win_c2]
+            in_window = [f for f in all_features if win_c1 <= f["start"] <= win_c2]
         else:
             in_window = [
-                f for f in all_cds if f["start"] <= win_c2 and f["end"] >= win_c1
+                f for f in all_features if f["start"] <= win_c2 and f["end"] >= win_c1
             ]
 
         for f in in_window:
@@ -1157,7 +1335,7 @@ def run_context_search(args) -> None:
         print(
             f"\n[*] Context: '{args.context}' "
             f"({anchor['start']:,}\u2013{anchor['end']:,} bp)  "
-            f"window \u00b1{args.window:,} bp  "
+            f"window \u00b1{window:,} bp  "
             f"\u2192 {win_c1:,}\u2013{win_c2:,}\n"
             f"[*] {len(in_window)} feature(s) in window"
             + (f" ({clipped} straddling an edge):\n" if clipped else ":\n"),
@@ -1179,7 +1357,7 @@ def run_context_search(args) -> None:
             sf = f" \\\n    --seq {record.id}" if args.seq else ""
             sys.stdout.write(
                 f"Neighbourhood of '{args.context}' "
-                f"(\u00b1{args.window:,} bp, "
+                f"(\u00b1{window:,} bp, "
                 f"{win_c1:,}\u2013{win_c2:,} bp)\n\n"
             )
             _write_capped_feature_lines(
@@ -1205,7 +1383,7 @@ def run_context_search(args) -> None:
 
 
 def run_keyword_search(args) -> None:
-    """Searches CDS features for one or more query keywords.
+    """Searches CDS/RNA features for one or more query keywords.
 
     Supports any number of keywords supplied to ``-q``. For a single keyword,
     the output is identical to the original single-keyword format. For
@@ -1214,8 +1392,8 @@ def run_keyword_search(args) -> None:
     ``Keyword`` column with rows sorted by keyword order.
 
     Annotation text search (``--search-type product``) checks /product=,
-    /gene_kind=, /gene_functions=, /sec_met_domain=, and /note=.
-    Locus searches check only /locus_tag=.
+    /ncRNA_class=, /gene_kind=, /gene_functions=, /sec_met_domain=, and
+    /note=. Locus searches check only /locus_tag=.
 
     Args:
         args: Parsed argument namespace. ``args.query`` must be set.
@@ -1233,7 +1411,7 @@ def run_keyword_search(args) -> None:
         record_meta[record.id] = _record_meta_entry(record)
 
         for feature in record.features:
-            if feature.type != "CDS":
+            if feature.type not in VALID_FEATURE_TYPES:
                 continue
 
             locus = feature.qualifiers.get("locus_tag", [""])[0]
@@ -1327,7 +1505,7 @@ def run_keyword_search(args) -> None:
 
 
 def run_coordinate_search(args) -> None:
-    """Shows all CDS features overlapping the queried range [c1, c2].
+    """Shows all CDS/RNA features overlapping the queried range [c1, c2].
 
     By default (overlap-inclusive), a feature is included if it touches the
     range at all, even partially — e.g. a megasynthase that engulfs the
@@ -1353,7 +1531,7 @@ def run_coordinate_search(args) -> None:
         record_meta[record.id] = _record_meta_entry(record)
 
         for feature in record.features:
-            if feature.type != "CDS":
+            if feature.type not in VALID_FEATURE_TYPES:
                 continue
 
             start = int(feature.location.start) + 1
