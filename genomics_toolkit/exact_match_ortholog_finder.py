@@ -1,42 +1,61 @@
-"""
-Ortholog Extractor
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
 
-Calculates mature peptide cores and identifies orthologs across reference genomes
-using EXACT SUBSTRING MATCHING (100% identity required).
+"""Exact Match Homolog Finder — exact-substring peptide search across reference genomes.
+
+Calculates mature peptide cores and finds candidate homologs across reference
+genomes using EXACT SUBSTRING MATCHING (100%% identity required).
 
 This script accepts pre-peptide sequences and calculates their mature,
 membrane-inserting cores based on biochemical cleavage sites. It then
 uses these core sequences to scan target reference genomes, identifying
-and extracting full orthologous protein sequences. If multiple targets map to
-the same physical locus, it aggregates them into a single FASTA header
+and extracting the full matching protein sequences. If multiple targets map
+to the same physical locus, it aggregates them into a single FASTA header
 to prevent duplicate sequence outputs.
 
 Important:
     This tool uses EXACT substring matching. A single amino acid substitution
     in the core region will cause a miss. For divergent homolog detection at
-    lower identity (e.g., ≥35%), use gbk_ortholog_finder.py (Smith-Waterman
+    lower identity (e.g., ≥35%%), use gbk_ortholog_finder.py (Smith-Waterman
     alignment with BLOSUM62 scoring) instead.
 
     Use --raw to skip bacteriocin-specific core trimming and search using
     the full provided sequence. Required for non-bacteriocin targets.
 
-License: MIT
+    Reference files must be protein sequences (GenBank with /translation
+    qualifiers, or protein FASTA: .faa/.mpfa). Nucleotide FASTA files
+    (.fasta/.fa/.fna) are skipped with a warning — see "Reference format
+    handling" below.
 
-Reproducibility:
-    Associated with upcoming research (manuscript in preparation).
-    Correct attribution is requested when used in derivative works.
-    See LICENSE in the repository root for full details.
+Terminology note:
+    "Exact match" here means byte-identical sequence, not validated
+    orthology. An exact match can equally be a true ortholog, a recent
+    paralog, or simply a short, highly conserved motif shared by unrelated
+    proteins. Treat hits as candidate homologs requiring further
+    confirmation (e.g. reciprocal-best-hit or phylogenetic analysis) before
+    describing them as orthologs in a manuscript or other formal report.
 
-Example Usage:
-    $ python3 ortholog_extractor.py -t target.faa -r references/ -o extracted_orthologs.faa
+Note:
+    Associated with ongoing, unpublished research (manuscript in
+    preparation). Correct attribution is requested when used in derivative
+    works.
 
-    # For non-bacteriocin proteins (housekeeping genes, TFs, kinases, etc.):
-    $ python3 ortholog_extractor.py -t target.faa -r references/ --raw -o extracted_orthologs.faa
+Example:
+    Default bacteriocin-core search::
+
+        python3 exact_match_ortholog_finder.py \\
+            -t target.faa -r references/ -o extracted_homologs.faa
+
+    Non-bacteriocin proteins (housekeeping genes, TFs, kinases, etc.)::
+
+        python3 exact_match_ortholog_finder.py \\
+            -t target.faa -r references/ --raw -o extracted_homologs.faa
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import sys
 import argparse
@@ -55,7 +74,7 @@ from utils import stream_reference_files, calculate_mature_core, smart_open
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Hunts for orthologs using auto-calculated core peptide homology."
+        description="Searches for exact-match peptide cores against reference genomes."
     )
     parser.add_argument(
         "-t",
@@ -166,12 +185,52 @@ def load_target_peptides(fasta_path: Path, use_raw: bool = False) -> dict[str, s
     return targets
 
 
-def extract_orthologs(
+def extract_homologs(
     ref_path: Path, target_peptides: dict[str, str]
-) -> Iterator[tuple[str, str, str, str, str]]:
-    """Dynamically parses GenBank or FASTA format to yield ortholog data."""
+) -> Iterator[tuple[str, str, str, str, str, str]]:
+    """Dynamically parses GenBank or FASTA format to yield exact-match hits.
+
+    Reference format handling:
+        GenBank files always work — protein sequences come from the
+        /translation qualifier regardless of the file's nucleotide backbone.
+        For bare FASTA files, extension determines how the content is
+        treated (same convention as protein_presence_scanner.py): ``.faa``/
+        ``.mpfa`` are protein FASTA and are searched directly. ``.fasta``/
+        ``.fa``/``.fna`` are treated as nucleotide FASTA and are skipped
+        with a warning rather than silently exact-matching a protein probe
+        against a DNA string (which always fails with zero hits and no
+        explanation otherwise). If you do have protein sequences saved with
+        a ``.fasta``/``.fa`` extension, rename to ``.faa`` to search them.
+
+    Yields:
+        Tuples of ``(seq_id, locus, target_name, product, full_prot,
+        protein_id)``. ``protein_id`` is the RefSeq-style ``/protein_id``
+        qualifier when present (distinguishes splice isoforms that share
+        the same ``locus_tag``); empty string when absent or not applicable
+        (always empty for the FASTA branch, where ``locus`` is already the
+        FASTA record's own unique ID).
+    """
     try:
-        is_fasta = ref_path.suffix.lower() in (".fasta", ".fa", ".faa")
+        suffix = ref_path.suffix.lower()
+        is_protein_fasta = suffix in (".faa", ".mpfa")
+        is_nucleotide_fasta = suffix in (".fasta", ".fa", ".fna")
+        is_fasta = is_protein_fasta or is_nucleotide_fasta
+
+        if is_nucleotide_fasta:
+            # Guard against nucleotide FASTA silently scanned as protein
+            # (same bug class already fixed in protein_presence_scanner.py;
+            # same extension-based convention applied here for consistency).
+            # Skip-and-warn rather than hard-exit, since a directory scan
+            # shouldn't abort over one bad file among many valid ones.
+            print(
+                f"  [!] Skipping {ref_path.name}: nucleotide FASTA "
+                f"(.{suffix.lstrip('.')}) cannot be searched with a protein "
+                f"probe. Provide a protein FASTA (.faa) or an annotated "
+                f"GenBank file instead.",
+                file=sys.stderr,
+            )
+            return
+
         fmt = "fasta" if is_fasta else "genbank"
 
         with open(ref_path, "r", encoding="utf-8") as handle:
@@ -180,6 +239,7 @@ def extract_orthologs(
                 # BRANCH A: FASTA processing
                 if is_fasta:
                     full_translation = str(record.seq).upper()
+
                     for target_name, core_peptide in target_peptides.items():
                         if not core_peptide:
                             continue
@@ -194,7 +254,14 @@ def extract_orthologs(
                                 else "Unannotated FASTA sequence"
                             )
 
-                            yield ref_path.stem, record.id, target_name, product, full_translation
+                            yield (
+                                ref_path.stem,
+                                record.id,
+                                target_name,
+                                product,
+                                full_translation,
+                                "",  # protein_id: not applicable, record.id is unique here
+                            )
 
                 # BRANCH B: GenBank processing
                 else:
@@ -217,8 +284,18 @@ def extract_orthologs(
                                     product = feature.qualifiers.get(
                                         "product", ["Unknown product"]
                                     )[0]
+                                    protein_id = feature.qualifiers.get(
+                                        "protein_id", [""]
+                                    )[0]
 
-                                    yield record.id, locus_tag, target_name, product, full_translation
+                                    yield (
+                                        record.id,
+                                        locus_tag,
+                                        target_name,
+                                        product,
+                                        full_translation,
+                                        protein_id,
+                                    )
 
     except Exception as e:
         raise ValueError(f"Failed to parse {ref_path.name}: {e}") from e
@@ -232,31 +309,55 @@ def main() -> None:
 
         print(f"\n[*] Scanning reference space: {args.reference}\n", file=sys.stderr)
 
-        total_extracted_loci = 0
+        total_extracted_entries = 0
 
         with smart_open(args.output) as out_handle:
             for file_path in stream_reference_files(args.reference):
                 print(f"  -> Scanning {file_path.name}...", file=sys.stderr)
 
-                # file_hits aggregates multiple target probes hitting the same locus
+                # file_hits aggregates multiple target probes hitting the same
+                # exact sequence. Keyed by (locus, full_prot) rather than bare
+                # locus: a locus_tag is NOT guaranteed unique to one sequence —
+                # eukaryotic splice isoforms routinely share a locus_tag while
+                # having different translations. Keying on locus alone would
+                # let a second isoform's match silently overwrite/be discarded
+                # under the first isoform's sequence (a biologically false
+                # result). Keying on the actual sequence guarantees distinct
+                # isoforms get distinct entries, while truly identical
+                # sequences correctly still collapse into one entry.
                 file_hits = {}
 
-                for seq_id, locus, target_name, product, full_prot in extract_orthologs(
-                    file_path, targets
-                ):
-                    if locus not in file_hits:
-                        file_hits[locus] = {
+                for (
+                    seq_id,
+                    locus,
+                    target_name,
+                    product,
+                    full_prot,
+                    protein_id,
+                ) in extract_homologs(file_path, targets):
+                    key = (locus, full_prot)
+                    if key not in file_hits:
+                        file_hits[key] = {
                             "seq_id": seq_id,
                             "product": product,
                             "full_prot": full_prot,
+                            "protein_id": protein_id,
                             "mapped_targets": [target_name],
                         }
                     else:
-                        file_hits[locus]["mapped_targets"].append(target_name)
+                        file_hits[key]["mapped_targets"].append(target_name)
+
+                # Count how many distinct sequences share each locus, so headers
+                # can disambiguate isoforms (e.g. LOCUS_XP_001 vs LOCUS_XP_002)
+                # instead of all displaying the same bare locus tag.
+                locus_variant_count: dict[str, int] = {}
+                for locus, _seq in file_hits:
+                    locus_variant_count[locus] = locus_variant_count.get(locus, 0) + 1
+                locus_running_index: dict[str, int] = {}
 
                 # Process aggregated hits and write output
-                for locus, data in file_hits.items():
-                    total_extracted_loci += 1
+                for (locus, _seq), data in file_hits.items():
+                    total_extracted_entries += 1
 
                     # Clean the target names for the FASTA header
                     clean_names = [
@@ -274,17 +375,37 @@ def main() -> None:
                     else:
                         targets_str = ",".join(clean_names)
 
-                    fasta_header = f">{locus} | {data['seq_id']} | {data['product']} | [Ortholog_of_{targets_str}]"
+                    # Disambiguate the displayed identifier when multiple
+                    # distinct sequences (isoforms) share this locus_tag.
+                    if locus_variant_count[locus] > 1:
+                        locus_running_index[locus] = (
+                            locus_running_index.get(locus, 0) + 1
+                        )
+                        if data["protein_id"]:
+                            display_locus = f"{locus}_{data['protein_id']}"
+                        else:
+                            display_locus = (
+                                f"{locus}_isoform{locus_running_index[locus]}"
+                            )
+                    else:
+                        display_locus = locus
+
+                    fasta_header = (
+                        f">{display_locus} | {data['seq_id']} | {data['product']} | "
+                        f"[Homolog_of_{targets_str}]"
+                    )
 
                     out_handle.write(f"{fasta_header}\n{data['full_prot']}\n")
                     print(
-                        f"      [Hit] {locus} contains core(s) from {len(data['mapped_targets'])} target probe(s)! ({len(data['full_prot'])} aa)",
+                        f"      [Hit] {display_locus} contains core(s) from "
+                        f"{len(data['mapped_targets'])} target probe(s)! "
+                        f"({len(data['full_prot'])} aa)",
                         file=sys.stderr,
                     )
 
         print("\n" + "=" * 50, file=sys.stderr)
         print(
-            f"[*] SUCCESS: {total_extracted_loci} unique loci extracted.",
+            f"[*] SUCCESS: {total_extracted_entries} unique sequence(s) extracted.",
             file=sys.stderr,
         )
 
