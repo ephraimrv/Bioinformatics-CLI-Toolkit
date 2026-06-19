@@ -59,6 +59,16 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
+    v1.5.0: The strand-aware upstream-slicing arithmetic in
+    ``_extract_upstream_seq`` (below) now delegates to
+    ``utils.extract_upstream_window()`` instead of reimplementing the
+    forward/reverse slice math locally. This was one of several
+    independent copies of the same coordinate logic spread across this
+    script, ``regulon_scanner.py``, and ``utils.extract_upstream_sequence``
+    — see ``utils.py``'s v1.2.0 changelog note for the full consolidation.
+    This function's own signature, return contract, and truncation-warning
+    behavior are unchanged; only the internal slicing math moved.
+
 Examples:
     # Prokaryote (auto-detected)
     $ python3 universal_promoter_extractor.py \
@@ -83,7 +93,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import sys
 import argparse
@@ -98,7 +108,7 @@ except ImportError:
         "ERROR: Biopython is required but not installed.\n"
         "       Install it with: pip install biopython"
     )
-from utils import stream_reference_files
+from utils import stream_reference_files, extract_upstream_window
 
 # ── Mode constants ─────────────────────────────────────────────────────────────
 
@@ -167,6 +177,11 @@ def _extract_upstream_seq(
     Handles both strands and contig boundary truncation. Prints a warning
     to stderr when the requested window is truncated.
 
+    The strand-aware slicing arithmetic itself lives in
+    ``utils.extract_upstream_window()`` (shared with ``regulon_scanner.py``
+    and ``utils.extract_upstream_sequence``); this function only adds the
+    truncation-warning behavior specific to this script's output.
+
     Args:
         record:      BioPython SeqRecord containing the genome sequence.
         start:       0-based feature start coordinate (BioPython convention).
@@ -180,14 +195,9 @@ def _extract_upstream_seq(
         The actual length may be shorter than upstream_bp when the feature
         is within upstream_bp bases of a contig boundary.
     """
-    if strand == 1:
-        slice_start = max(0, start - upstream_bp)
-        actual_upstream = start - slice_start
-        upstream_seq = str(record.seq[slice_start:start])
-    else:
-        slice_end = min(len(record.seq), end + upstream_bp)
-        actual_upstream = slice_end - end
-        upstream_seq = str(record.seq[end:slice_end].reverse_complement())
+    upstream_seq, actual_upstream, _slice_start, _slice_end = extract_upstream_window(
+        record, start, end, strand, upstream_bp
+    )
 
     if actual_upstream < upstream_bp:
         print(

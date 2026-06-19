@@ -85,18 +85,20 @@ PERFORMANCE:
     ``--genes-file``) are O(1), making the script suitable for extracting
     thousands of genes from a single record without redundant iteration.
 
-OUTPUT FORMAT REFERENCE:
+Output Format Reference:
     ``--faa FILE.faa``       Protein FASTA (one entry per non-truncated CDS)
     ``--fna FILE.fna``       Region DNA FASTA (one entry, includes intergenic)
     ``--gene-fna FILE.fna``  Gene DNA FASTA (one entry per non-truncated CDS)
     ``--gbk FILE.gbk``       Annotated GenBank with local coordinates
 
-Note:
-    Associated with ongoing, unpublished research (manuscript in
-    preparation). Correct attribution is requested when used in
-    derivative works.
+License: MIT
 
-Examples:
+Note:
+    This module is part of ongoing research and is associated with an upcoming
+    publication. Please cite appropriately when used in derivative works.
+    See LICENSE file in the repository root for full license terms.
+
+Example:
     Check what sequences are in the file::
 
         python3 extract_genome_region.py -i genome.gbff --list-sequences
@@ -134,7 +136,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "2.2.0"
+__version__ = "2.4.0"
 
 import sys
 import argparse
@@ -514,39 +516,71 @@ def _load_gene_tags_from_file(path: Path) -> list[str]:
 
 
 def _find_target_record(args: argparse.Namespace) -> SeqRecord:
-    """Finds and returns the target SeqRecord from the input file."""
-    target = None
-    found_second = False
+    """Finds and returns the target SeqRecord from the input file.
 
-    for record in SeqIO.parse(args.input, "genbank"):
-        if args.seq is None or record.id == args.seq:
-            if target is None:
-                target = record
-                if args.seq is not None:
-                    break
-            else:
-                found_second = True
-                break
-        else:
-            found_second = True
+    When ``--seq`` is given, returns that specific record (or exits if not
+    found). When ``--seq`` is absent:
 
-    if target is None:
-        if args.seq:
-            sys.exit(
-                f"\n[!] Sequence '{args.seq}' not found in '{args.input.name}'.\n"
-                f"    Run --list-sequences to see available IDs.\n"
-            )
-        else:
-            sys.exit(f"\n[!] No records found in '{args.input.name}'.\n")
+    - If only one record exists, returns it directly.
+    - If ``--genes`` or ``--locus`` is given, scans all records for the
+      first locus tag mentioned and auto-selects whichever contig contains
+      it — no ``--seq`` required. Prints a notice so the user knows which
+      contig was chosen.
+    - Otherwise (coordinate or whole-sequence mode with a multi-record
+      file), exits with a clear message asking for ``--seq``.
+    """
+    # Collect all records up front so we can search across them.
+    records: list[SeqRecord] = list(SeqIO.parse(args.input, "genbank"))
 
-    if args.seq is None and found_second:
+    if not records:
+        sys.exit(f"\n[!] No records found in '{args.input.name}'.\n")
+
+    # Exact --seq match requested — fast path, no ambiguity.
+    if args.seq is not None:
+        for rec in records:
+            if rec.id == args.seq:
+                return rec
         sys.exit(
-            f"\n[!] '{args.input.name}' contains multiple sequences.\n"
-            f"    Use --seq SEQ_ID to specify which contig to extract.\n"
+            f"\n[!] Sequence '{args.seq}' not found in '{args.input.name}'.\n"
             f"    Run --list-sequences to see available IDs.\n"
         )
 
-    return target
+    # Single-record file — unambiguous regardless of mode.
+    if len(records) == 1:
+        return records[0]
+
+    # Multi-record file: auto-detect contig when a locus tag is available.
+    # Build the probe tag: first element of --genes, or first element of --locus.
+    probe_tag: str | None = None
+    if args.genes:
+        probe_tag = args.genes[0]
+    elif args.locus:
+        probe_tag = args.locus[0]
+
+    if probe_tag is not None:
+        for rec in records:
+            for feat in rec.features:
+                if probe_tag in feat.qualifiers.get("locus_tag", []):
+                    print(
+                        f"[*] Auto-selected contig '{rec.id}' "
+                        f"(contains locus tag '{probe_tag}').\n"
+                        f"    Pass --seq {rec.id} to make this explicit.\n",
+                        file=sys.stderr,
+                    )
+                    return rec
+        # Tag not found in any record.
+        sys.exit(
+            f"\n[!] Locus tag '{probe_tag}' not found in '{args.input.name}'.\n"
+            f"    Run --list-sequences to see available sequence IDs,\n"
+            f"    then use find_gbk_features.py -q to locate the tag.\n"
+        )
+
+    # Coordinate / whole-sequence mode with multiple records — need explicit --seq.
+    sys.exit(
+        f"\n[!] '{args.input.name}' contains multiple sequences.\n"
+        f"    Use --seq SEQ_ID to specify which contig to extract.\n"
+        f"    Run --list-sequences to see available IDs.\n"
+    )
 
 
 # ── Coordinate resolution ─────────────────────────────────────────────────────
@@ -896,15 +930,101 @@ def write_gene_fna(
 # ── Utility ───────────────────────────────────────────────────────────────────
 
 
-def list_sequences(input_path: Path) -> None:
-    """Lists all sequence IDs, lengths, and organisms in a GenBank file."""
+_RNA_FEATURE_TYPES = {"tRNA", "rRNA", "tmRNA", "ncRNA", "misc_RNA"}
+
+
+def list_sequences(input_path: Path, output_path: Path | None = None) -> None:
+    """Lists all sequences in the file with CDS/RNA statistics.
+
+    Shows sequence ID, length, organism, CDS count, RNA feature count,
+    first and last locus tag, and the coordinate span of annotated features.
+    Locus tag range is CDS-based when CDS features are present; falls back
+    to RNA features for RNA-only contigs (tRNA clusters, rRNA operons).
+
+    When ``output_path`` is provided, also writes a TSV with columns:
+    ``Sequence_ID``, ``Length_bp``, ``Organism``, ``CDS_Count``,
+    ``RNA_Count``, ``First_Tag``, ``Last_Tag``, ``Gene_Start``, ``Gene_End``.
+
+    Args:
+        input_path:  Path to the GenBank file.
+        output_path: Optional path to write the TSV summary.
+    """
+    rows: list[dict] = []
     print(f"\n[*] Sequences in '{input_path.name}':\n")
-    count = 0
+
     for record in SeqIO.parse(input_path, "genbank"):
         org = record.annotations.get("organism", "")
-        print(f"  {record.id:<35}  {len(record.seq):>12,} bp  {org[:50]}")
-        count += 1
-    print(f"\n[*] {count} sequence(s). Use one of these IDs with --seq.\n")
+        cds_features = [f for f in record.features if f.type == "CDS"]
+        rna_features = [f for f in record.features if f.type in _RNA_FEATURE_TYPES]
+        n_cds = len(cds_features)
+        n_rna = len(rna_features)
+
+        tag_source = cds_features if cds_features else rna_features
+        if tag_source:
+            locus_tags = [
+                f.qualifiers.get("locus_tag", [""])[0]
+                for f in tag_source
+                if f.qualifiers.get("locus_tag", [""])[0]
+            ]
+            first_tag = locus_tags[0] if locus_tags else "(none)"
+            last_tag = locus_tags[-1] if locus_tags else "(none)"
+            gene_start = min(int(f.location.start) + 1 for f in tag_source)
+            gene_end = max(int(f.location.end) for f in tag_source)
+        else:
+            first_tag = last_tag = "(no features)"
+            gene_start = gene_end = 0
+
+        print(
+            f"  {record.id:<35}  {len(record.seq):>12,} bp"
+            + (f"  [{org}]" if org else "")
+        )
+        print(
+            f"    {n_cds:,} CDS"
+            + (f"  |  {n_rna:,} RNA (tRNA/rRNA/ncRNA/etc.)" if n_rna else "")
+            + f"  |  tags: {first_tag} \u2192 {last_tag}"
+            + f"  |  span: {gene_start:,}\u2013{gene_end:,} bp"
+        )
+        print()
+
+        rows.append(
+            {
+                "Sequence_ID": record.id,
+                "Length_bp": len(record.seq),
+                "Organism": org,
+                "CDS_Count": n_cds,
+                "RNA_Count": n_rna,
+                "First_Tag": first_tag,
+                "Last_Tag": last_tag,
+                "Gene_Start": gene_start,
+                "Gene_End": gene_end,
+            }
+        )
+
+    print(f"[*] {len(rows)} sequence(s) found.\n")
+    print(
+        "  Next steps:\n"
+        "    --seq SEQ_ID                         extract an entire contig\n"
+        "    --seq SEQ_ID --locus TAG TAG          extract by locus tag span\n"
+        "    --seq SEQ_ID --c1 START --c2 END      extract by coordinates\n"
+    )
+
+    if output_path:
+        cols = [
+            "Sequence_ID",
+            "Length_bp",
+            "Organism",
+            "CDS_Count",
+            "RNA_Count",
+            "First_Tag",
+            "Last_Tag",
+            "Gene_Start",
+            "Gene_End",
+        ]
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.write("\t".join(cols) + "\n")
+            for row in rows:
+                fh.write("\t".join(str(row[c]) for c in cols) + "\n")
+        print(f"[*] TSV saved to '{output_path}'.\n")
 
 
 # ── Core extraction ───────────────────────────────────────────────────────────
@@ -1242,7 +1362,7 @@ def main() -> None:
         sys.exit(f"\n[!] File not found: {args.input}\n")
 
     if args.list_sequences:
-        list_sequences(args.input)
+        list_sequences(args.input, getattr(args, "output", None))
         return
 
     extract_and_write(args)

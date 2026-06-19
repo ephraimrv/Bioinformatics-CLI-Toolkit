@@ -74,13 +74,29 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
+    v1.4.0: ``_compute_background``, ``_count_total_windows``, and
+    ``stream_regulon_hits`` each independently reimplemented the same
+    strand-aware upstream-slicing arithmetic (forward:
+    ``slice_start = max(0, start - upstream_bp)``; reverse:
+    ``slice_end = min(len(seq), end + upstream_bp)`` + reverse-complement)
+    — three copies in this file alone, on top of further copies in
+    ``universal_promoter_extractor.py`` and
+    ``utils.extract_upstream_sequence``. All three now delegate to
+    ``utils.resolve_upstream_window()`` / ``utils.extract_upstream_window()``
+    (see ``utils.py``'s v1.2.0 changelog note for the full rationale).
+    ``_count_total_windows`` uses the arithmetic-only
+    ``resolve_upstream_window()`` since it never needs the actual bases;
+    the other two use ``extract_upstream_window()``. No behavior change —
+    same slice boundaries, same truncation handling, same genomic
+    coordinates for motif hits.
+
 Example:
     $ python3 regulon_scanner.py -i C5_genome.gbk -u 200 -m "GCGCAG[CT]G[GT]T[TA]AAAT" -o regulon.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import re
 import sys
@@ -99,7 +115,7 @@ except ImportError:
         "       Install it with: pip install biopython"
     )
 
-from utils import base_parser
+from utils import base_parser, resolve_upstream_window, extract_upstream_window
 
 
 def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
@@ -116,6 +132,10 @@ def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
     matching the original behaviour of silently excluding ambiguous bases from
     both the numerator and the denominator.
 
+    The strand-aware upstream slice itself is delegated to
+    ``utils.extract_upstream_window()`` rather than reimplemented here —
+    see the module changelog (v1.4.0).
+
     Args:
         gbk_path:    Path to the GenBank file.
         upstream_bp: Upstream window size (must match the scan window).
@@ -131,12 +151,10 @@ def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
             start = int(feature.location.start)
             end = int(feature.location.end)
             strand = feature.location.strand
-            if strand == 1:
-                upstream = str(record.seq[max(0, start - upstream_bp) : start]).upper()
-            else:
-                raw = record.seq[end : min(len(record.seq), end + upstream_bp)]
-                upstream = str(raw.reverse_complement()).upper()
-            counts.update(upstream)
+            upstream, _actual_upstream, _slice_start, _slice_end = (
+                extract_upstream_window(record, start, end, strand, upstream_bp)
+            )
+            counts.update(upstream.upper())
     total = sum(counts[b] for b in "ACGT") or 1
     return {b: max(counts[b] / total, 0.01) for b in "ACGT"}
 
@@ -154,6 +172,11 @@ def _count_total_windows(gbk_path: Path, upstream_bp: int, motif_len: int) -> in
     Accounts for contig-boundary truncation: genes near the start of a
     contig have shorter actual upstream regions, and therefore fewer windows.
 
+    Only the window LENGTH is needed here, never the actual bases, so this
+    uses ``utils.resolve_upstream_window()`` (arithmetic only) rather than
+    ``extract_upstream_window()`` — no sequence slicing or reverse-complement
+    work is wasted just to count positions. See the module changelog (v1.4.0).
+
     Args:
         gbk_path:    Path to the GenBank file.
         upstream_bp: Upstream window size used in the scan.
@@ -164,16 +187,16 @@ def _count_total_windows(gbk_path: Path, upstream_bp: int, motif_len: int) -> in
     """
     total = 0
     for record in SeqIO.parse(gbk_path, "genbank"):
+        seq_len = len(record.seq)
         for feature in record.features:
             if feature.type != "CDS":
                 continue
             start = int(feature.location.start)
             end = int(feature.location.end)
             strand = feature.location.strand
-            if strand == 1:
-                actual_up = start - max(0, start - upstream_bp)
-            else:
-                actual_up = min(len(record.seq), end + upstream_bp) - end
+            _slice_start, _slice_end, actual_up = resolve_upstream_window(
+                seq_len, start, end, strand, upstream_bp
+            )
             windows = max(0, actual_up - motif_len + 1)
             total += windows * 2  # both strands scanned
     return total
@@ -304,6 +327,11 @@ def stream_regulon_hits(
     This ensures Transcription Factor binding sites in either orientation
     are detected, including palindromic and non-palindromic motifs.
 
+    The strand-aware upstream slice (and the ``slice_start``/``slice_end``
+    needed to map a motif hit back to genomic coordinates) is delegated to
+    ``utils.extract_upstream_window()`` rather than reimplemented here —
+    see the module changelog (v1.4.0).
+
     Args:
         gbk_path:       Path to the GenBank file.
         regex_pattern:  IUPAC/regex motif string. Matching is case-insensitive
@@ -349,18 +377,13 @@ def stream_regulon_hits(
                     end = int(feature.location.end)
                     strand = feature.location.strand
 
-                    # Extract upstream with boundary tracking
-                    if strand == 1:
-                        slice_start = max(0, start - upstream_bp)
-                        slice_end = start  # not used for + strand coords but defined for consistency
-                        actual_upstream = start - slice_start
-                        upstream_seq = str(record.seq[slice_start:start]).upper()
-                    else:
-                        slice_start = end  # not used for - strand coords but defined for consistency
-                        slice_end = min(len(record.seq), end + upstream_bp)
-                        actual_upstream = slice_end - end
-                        raw_seq = record.seq[end:slice_end]
-                        upstream_seq = str(raw_seq.reverse_complement()).upper()
+                    # Extract upstream with boundary tracking. slice_start/
+                    # slice_end are needed below to convert motif hit positions
+                    # back to genomic coordinates (gstart/gend).
+                    upstream_seq, actual_upstream, slice_start, slice_end = (
+                        extract_upstream_window(record, start, end, strand, upstream_bp)
+                    )
+                    upstream_seq = upstream_seq.upper()
 
                     if actual_upstream < upstream_bp:
                         print(

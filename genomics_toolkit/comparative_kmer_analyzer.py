@@ -58,6 +58,26 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
+    v1.3.0 fixes: (1) ``get_kmer_counts()`` now excludes any window
+    containing a non-ACGT character (e.g. 'N' from assembly gaps or
+    contig-boundary truncation) from BOTH the k-mer counts and the
+    window-count denominator used for CPK normalization. Previously every
+    window was counted regardless of content — a sequence with an N-gap
+    silently had a meaningless "k-mer" (e.g. 'ACNNNN') counted as real
+    biological signal, and that same window still inflated the CPK
+    denominator even though it contributed nothing real to any k-mer's
+    count. motif_discovery.py already excluded N-windows from seed
+    scoring; this brings get_kmer_counts() in line with that. The
+    function now returns ``(counts, n_valid_windows)`` instead of just
+    ``counts``, and raises ValueError if zero valid windows remain.
+    (2) Target/regulator upstream extraction now uses
+    ``extract_upstream_sequence_with_length()`` (utils.py v1.3.0) and
+    warns to stderr if either side's extracted window is shorter than
+    requested (contig-boundary truncation) — previously this was
+    silently undetectable, meaning two windows of different real length
+    could be compared under the assumption they were both the requested
+    length.
+
 Examples:
     # Basic run: Compare two genes with default k=6, show top 20 k-mers
     $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -o analysis.tsv
@@ -77,25 +97,17 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import math
 import sys
 import argparse
 
 from collections import Counter
-from utils import base_parser, extract_upstream_sequence
+from utils import base_parser, extract_upstream_sequence_with_length, revcomp
+
 
 # ── Canonical k-mer helpers ───────────────────────────────────────────────────
-
-_RC_TABLE = str.maketrans("ACGT", "TGCA")
-
-
-def _revcomp(seq: str) -> str:
-    """Return the reverse complement of an uppercase DNA string."""
-    return seq.translate(_RC_TABLE)[::-1]
-
-
 def _canonical(kmer: str) -> str:
     """Return the canonical form of a k-mer (lexicographically smaller of kmer/revcomp).
 
@@ -109,7 +121,7 @@ def _canonical(kmer: str) -> str:
     Returns:
         The k-mer or its reverse complement, whichever sorts first.
     """
-    rc = _revcomp(kmer)
+    rc = revcomp(kmer)
     return kmer if kmer <= rc else rc
 
 
@@ -148,9 +160,10 @@ def calc_l2fc(t_count: int, r_count: int, t_windows: int, r_windows: int) -> flo
 # ── K-mer counting ────────────────────────────────────────────────────────────
 
 
-def get_kmer_counts(sequence: str, k: int) -> Counter:
+def get_kmer_counts(sequence: str, k: int) -> tuple[Counter, int]:
     """
-    Returns the canonical k-mer frequency count for a sequence.
+    Returns the canonical k-mer frequency count for a sequence, excluding
+    any window that touches a non-ACGT character.
 
     Canonical k-mers merge the count of each k-mer with its reverse complement
     into a single entity (the lexicographically smaller of the two). This
@@ -158,16 +171,31 @@ def get_kmer_counts(sequence: str, k: int) -> Counter:
     on, because a TF binding GATA on the template strand reads as TATC on the
     coding strand — without canonicalization, you see each at half frequency.
 
+    Windows containing 'N' (or any other non-ACGT character — assembly gaps,
+    contig-boundary truncation, ambiguity codes) are excluded entirely, from
+    both the count and the valid-window total. An 'N' window represents an
+    unknown base, not a real k-mer; counting it both dilutes true frequencies
+    with meaningless entries (e.g. 'ACNNNN') and — if included in the window
+    total used for CPK normalization while excluded from the numerator —
+    would systematically deflate every CPK value. motif_discovery.py already
+    excludes N-windows from seed scoring; this keeps the two scripts'
+    treatment of ambiguous bases consistent.
+
     Args:
         sequence: A nucleotide string.
         k: The length of each k-mer. Must be >= 1.
 
     Returns:
-        A Counter mapping canonical k-mer strings to their integer counts.
-        Each count reflects occurrences on BOTH strands combined.
+        A tuple of (counts, n_valid_windows):
+          - counts: Counter mapping canonical k-mer strings to their integer
+            counts. Each count reflects occurrences on BOTH strands combined.
+          - n_valid_windows: number of windows that were ACGT-only and
+            therefore counted. Use this (not raw sequence length) as the
+            CPK normalization denominator.
 
     Raises:
-        ValueError: If k < 1 or if the sequence is shorter than k.
+        ValueError: If k < 1, if the sequence is shorter than k, or if zero
+            valid (ACGT-only) windows remain after exclusion.
     """
     if k < 1:
         raise ValueError(f"k must be at least 1, got {k}.")
@@ -178,8 +206,25 @@ def get_kmer_counts(sequence: str, k: int) -> Counter:
         )
 
     seq = sequence.upper()
-    kmers = [_canonical(seq[i : i + k]) for i in range(len(seq) - k + 1)]
-    return Counter(kmers)
+    valid_bases = frozenset("ACGT")
+    kmers = []
+    n_valid = 0
+    for i in range(len(seq) - k + 1):
+        window = seq[i : i + k]
+        if not set(window) <= valid_bases:
+            continue
+        n_valid += 1
+        kmers.append(_canonical(window))
+
+    if n_valid == 0:
+        raise ValueError(
+            f"No valid ACGT-only {k}-mer windows found in a {len(seq)}bp "
+            "sequence (all windows touch 'N' or another non-ACGT character). "
+            "Reduce k, increase the upstream window, or check the input "
+            "for excessive assembly gaps."
+        )
+
+    return Counter(kmers), n_valid
 
 
 def get_args() -> argparse.Namespace:
@@ -215,29 +260,45 @@ def main() -> None:
     output_path = args.output
 
     try:
-        # Extract sequences
-        t_seq, _, _, _ = extract_upstream_sequence(
+        # Extract sequences. Using the *_with_length variant so we can
+        # detect and warn about contig-boundary truncation — otherwise a
+        # gene sitting near the edge of its contig would silently return
+        # a shorter-than-requested window with no indication in the output,
+        # and the two windows being compared could be of meaningfully
+        # different real length without the user ever knowing.
+        t_seq, _, _, _, t_actual_upstream = extract_upstream_sequence_with_length(
             args.input, args.target, args.u_target
         )
-        r_seq, _, _, _ = extract_upstream_sequence(
+        r_seq, _, _, _, r_actual_upstream = extract_upstream_sequence_with_length(
             args.input, args.regulator, args.u_regulator
         )
 
-        # Count k-mers
-        t_counts = get_kmer_counts(t_seq, args.kmer)
-        r_counts = get_kmer_counts(r_seq, args.kmer)
+        if t_actual_upstream < args.u_target:
+            print(
+                f"[!] Warning: target '{args.target}' is only "
+                f"{t_actual_upstream}bp from its contig's edge — requested "
+                f"--u_target {args.u_target}bp, got {t_actual_upstream}bp.",
+                file=sys.stderr,
+            )
+        if r_actual_upstream < args.u_regulator:
+            print(
+                f"[!] Warning: regulator '{args.regulator}' is only "
+                f"{r_actual_upstream}bp from its contig's edge — requested "
+                f"--u_regulator {args.u_regulator}bp, got {r_actual_upstream}bp.",
+                file=sys.stderr,
+            )
+
+        # Count k-mers. total_*_windows now comes directly from
+        # get_kmer_counts()'s n_valid_windows (ACGT-only windows actually
+        # counted), not from raw sequence length — keeping the CPK
+        # normalization denominator consistent with what's in the numerator.
+        t_counts, total_t_windows = get_kmer_counts(t_seq, args.kmer)
+        r_counts, total_r_windows = get_kmer_counts(r_seq, args.kmer)
 
         all_kmers = sorted(set(t_counts) | set(r_counts))
 
-        # The correct denominator for CPK is L - k + 1 (the actual number of
-        # sliding windows), NOT the raw sequence length L.
-        # Using L inflates the denominator and deflates CPK density.
-        # For example, a 150bp sequence with k=6 has 145 windows, not 150.
-        total_t_windows = max(1, len(t_seq) - args.kmer + 1)
-        total_r_windows = max(1, len(r_seq) - args.kmer + 1)
-
         def calc_cpk(count: int, total_windows: int) -> float:
-            """Counts Per Kilobase, normalized by actual k-mer window count."""
+            """Counts Per Kilobase, normalized by actual valid k-mer window count."""
             return (count / total_windows) * 1000
 
         if output_path:

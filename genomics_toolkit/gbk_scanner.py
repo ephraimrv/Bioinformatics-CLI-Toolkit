@@ -22,31 +22,31 @@ A CDS feature that matches more than one keyword appears once per matching
 keyword so that no hit is missed.
 
 Note:
-    Associated with ongoing, unpublished research (manuscript in
-    preparation). Correct attribution is requested when used in
-    derivative works.
+    This script is part of ongoing research and is associated with an upcoming
+    publication. Correct attribution is requested when used in derivative works.
+    Released under the MIT License. See LICENSE in the repository root.
 
-Examples:
+Example:
     Search a single NCBI GBFF file for bacteriocin genes::
 
-        python3 gbk_scanner.py -i genome.gbff -q "bacteriocin"
+        python3 bgc_explorer.py -i genome.gbff -q "bacteriocin"
 
     Search a directory with three keywords and export results::
 
-        python3 gbk_scanner.py -i ./genomes/ \\
+        python3 bgc_explorer.py -i ./genomes/ \\
             -q "bacteriocin" "ABC transporter" "response regulator" \\
             -o results.tsv
 
     Search an antiSMASH region file for biosynthetic roles::
 
-        python3 gbk_scanner.py \\
+        python3 bgc_explorer.py \\
             -i C5_gnlProkkaNHJNNNGJ_1.region001.gbk \\
             -q "biosynthetic" "RiPP"
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 import re
 import sys
@@ -430,8 +430,8 @@ def print_terminal_report(
         )
     print()
     print(
-        "  [i] Protein sequences are included in the TSV output\n"
-        "      (Protein_Sequence column, rightmost). Use -o FILE.tsv to save.\n"
+        "  [i] Protein sequences are included in the TSV (Protein_Sequence column).\n"
+        "      Use -o FILE.tsv to save — terminal report is suppressed when -o is set.\n"
     )
 
 
@@ -518,7 +518,7 @@ def write_tsv(
                 out.write(
                     "\t".join(str(hit[_COL_TO_KEY[col]]) for col in _TSV_COLUMNS) + "\n"
                 )
-        print(f"[*] TSV written \u2192 {output_path.resolve()}")
+        print(f"[*] TSV written \u2192 {output_path.resolve()}", file=sys.stderr)
 
     except OSError as exc:
         sys.exit(f"\n[!] Could not write '{output_path}': {exc}\n")
@@ -614,10 +614,10 @@ def main() -> None:
     for hit in all_hits:
         hit["keyword"] = lower_to_display[hit["keyword"]]
 
-    print_terminal_report(all_hits, queries, files_scanned)
-
     if args.output:
         write_tsv(all_hits, queries, args.output)
+    else:
+        print_terminal_report(all_hits, queries, files_scanned)
 
 
 if __name__ == "__main__":

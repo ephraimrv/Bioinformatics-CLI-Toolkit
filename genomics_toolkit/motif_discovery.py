@@ -242,17 +242,9 @@ except ImportError:
         "ERROR: Biopython is required but not installed.\n"
         "       Install it with: pip install biopython"
     )
-from utils import base_parser
+from utils import base_parser, revcomp
 
 # ── Reverse complement ────────────────────────────────────────────────────────
-
-_RC_TABLE = str.maketrans("ACGTN", "TGCAN")
-
-
-def _revcomp(seq: str) -> str:
-    """Return the reverse complement of a DNA string. N maps to N."""
-    return seq.translate(_RC_TABLE)[::-1]
-
 
 # ── Background model ──────────────────────────────────────────────────────────
 
@@ -397,7 +389,7 @@ def _e_step(
         for j in range(n_pos):
             window = seq[j : j + width]
             fwd = _score_window(window, pwm, bg)
-            rev = _score_window(_revcomp(window), pwm, bg)
+            rev = _score_window(revcomp(window), pwm, bg)
             log_scores.append(max(fwd, rev))
 
         # Softmax with -inf handling. If literally every window in this
@@ -471,7 +463,7 @@ def _m_step(
                 break
 
             # Use whichever strand's window scored higher under the current PWM
-            rc_window = _revcomp(window)
+            rc_window = revcomp(window)
             fwd_score = _score_window(window, pwm, bg)
             rev_score = _score_window(rc_window, pwm, bg)
             use_window = rc_window if rev_score > fwd_score else window
@@ -519,7 +511,7 @@ def _log_likelihood(
         for j in range(n_pos):
             window = seq[j : j + width]
             fwd = _score_window(window, pwm, bg)
-            rev = _score_window(_revcomp(window), pwm, bg)
+            rev = _score_window(revcomp(window), pwm, bg)
             log_scores.append(max(fwd, rev))
         valid = [s for s in log_scores if s > float("-inf")]
         if not valid:
@@ -618,7 +610,7 @@ def _extract_instances(
         for j in range(n_pos):
             window = seq[j : j + width]
             fwd_score = _score_window(window, pwm, bg)
-            rev_score = _score_window(_revcomp(window), pwm, bg)
+            rev_score = _score_window(revcomp(window), pwm, bg)
             if rev_score > fwd_score:
                 score, strand = rev_score, "-"
             else:
@@ -689,7 +681,7 @@ def _mask_sequences(
         start_0 = start_1 - 1
         window = seq[start_0 : start_0 + width]
         fwd_score = _score_window(window, pwm, bg)
-        rev_score = _score_window(_revcomp(window), pwm, bg)
+        rev_score = _score_window(revcomp(window), pwm, bg)
         score = max(fwd_score, rev_score)
         if score > threshold:
             s = list(seq)
@@ -877,7 +869,7 @@ def _calibrate_zoops_threshold(
                 if "N" in window:
                     continue
                 fwd = _score_window(window, pwm, bg)
-                rev = _score_window(_revcomp(window), pwm, bg)
+                rev = _score_window(revcomp(window), pwm, bg)
                 s = max(fwd, rev)
                 if s > best:
                     best = s

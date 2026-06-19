@@ -110,7 +110,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.7.0"
+__version__ = "1.7.3"
 
 
 import sys
@@ -1035,8 +1035,9 @@ def run_list_sequences(args) -> None:
     Shows sequence ID, length, organism, CDS count, RNA feature count
     (tRNA/rRNA/ncRNA/etc.), first and last locus tag, and the coordinate
     span of the coding region. Locus tag range and coordinate span are
-    always CDS-based (the protein-coding gene locus_tag series), even when
-    RNA features are also present.
+    CDS-based when CDS features are present; for RNA-only contigs (e.g.
+    tRNA clusters, rRNA operons with no CDS), the range falls back to
+    RNA features so the locus tag series is always shown.
 
     When ``-o`` is specified, writes a TSV with columns: ``Sequence_ID``,
     ``Length_bp``, ``Organism``, ``CDS_Count``, ``RNA_Count``, ``First_Tag``,
@@ -1056,32 +1057,41 @@ def run_list_sequences(args) -> None:
         n_cds = len(cds_features)
         n_rna = len(rna_features)
 
-        if cds_features:
+        # Use CDS features for tag range/coordinates when available; fall back
+        # to RNA features (tRNA/rRNA/ncRNA) for contigs that are purely
+        # non-coding (e.g. tRNA clusters, rRNA operons). Without this,
+        # RNA-only contigs always showed "(no CDS)" even when every feature
+        # on them has a real locus_tag.
+        tag_source_features = cds_features if cds_features else rna_features
+        if tag_source_features:
             locus_tags = [
                 f.qualifiers.get("locus_tag", [""])[0]
-                for f in cds_features
+                for f in tag_source_features
                 if f.qualifiers.get("locus_tag", [""])[0]
             ]
             first_tag = locus_tags[0] if locus_tags else "(none)"
             last_tag = locus_tags[-1] if locus_tags else "(none)"
-            gene_start = min(int(f.location.start) + 1 for f in cds_features)
-            gene_end = max(int(f.location.end) for f in cds_features)
+            gene_start = min(int(f.location.start) + 1 for f in tag_source_features)
+            gene_end = max(int(f.location.end) for f in tag_source_features)
         else:
-            first_tag = last_tag = "(no CDS)"
+            first_tag = last_tag = "(no features)"
             gene_start = gene_end = 0
 
-        # Terminal output
-        print(
-            f"  {record.id:<35}  {len(record.seq):>12,} bp"
-            + (f"  [{org}]" if org else "")
-        )
-        print(
-            f"    {n_cds:,} CDS"
-            + (f"  |  {n_rna:,} RNA (tRNA/rRNA/ncRNA/etc.)" if n_rna else "")
-            + f"  |  tags: {first_tag} \u2192 {last_tag}  |  "
-            f"genes: {gene_start:,}\u2013{gene_end:,} bp"
-        )
-        print()
+        # Terminal output — verbose only when NOT writing to a file.
+        # When -o is given the file IS the output; printing the same
+        # data to the terminal too is just noise.
+        if not args.output:
+            print(
+                f"  {record.id:<35}  {len(record.seq):>12,} bp"
+                + (f"  [{org}]" if org else "")
+            )
+            print(
+                f"    {n_cds:,} CDS"
+                + (f"  |  {n_rna:,} RNA (tRNA/rRNA/ncRNA/etc.)" if n_rna else "")
+                + f"  |  tags: {first_tag} \u2192 {last_tag}  |  "
+                f"genes: {gene_start:,}\u2013{gene_end:,} bp"
+            )
+            print()
 
         # Collect row for TSV
         rows.append(
@@ -1098,13 +1108,16 @@ def run_list_sequences(args) -> None:
             }
         )
 
-    print(f"[*] {len(rows)} sequence(s) found.\n")
-    print(
-        "  Next steps:\n"
-        "    --list-products --seq SEQ_ID   see what keywords exist on a contig\n"
-        "    --seq SEQ_ID                   list all features on a contig\n"
-        "    -q 'keyword' --seq SEQ_ID      find specific features\n"
-    )
+    if args.output:
+        print(f"[*] {len(rows)} sequence(s) written to '{args.output}'.\n")
+    else:
+        print(f"[*] {len(rows)} sequence(s) found.\n")
+        print(
+            "  Next steps:\n"
+            "    --list-products --seq SEQ_ID   see what keywords exist on a contig\n"
+            "    --seq SEQ_ID                   list all features on a contig\n"
+            "    -q 'keyword' --seq SEQ_ID      find specific features\n"
+        )
 
     if args.output:
         _write_tsv(rows, args.output)
@@ -1154,36 +1167,40 @@ def run_list_products(args) -> None:
 
     filtered = {p: c for p, c in counter.items() if c >= args.min_count}
     sorted_products = sorted(filtered.items(), key=lambda x: (-x[1], x[0]))
-
     scope = f"sequence '{args.seq}'" if args.seq else f"'{args.input.name}'"
-    print(f"\n[*] Product annotations in {scope}")
-    print(f"[*] Total CDS/RNA features scanned: {total_features:,}")
-    print(
-        f"[*] Excluded {hypo_count:,} 'hypothetical protein' entries "
-        f'(use -q "hypothetical" to search for them)'
-    )
-    if args.min_count > 1:
-        hidden = len(counter) - len(filtered)
-        print(
-            f"[*] Showing products with count >= {args.min_count} "
-            f"({hidden:,} rare/singleton entries hidden)"
-        )
-    print(f"[*] {len(sorted_products):,} unique products:\n")
-    print(f"  {'Count':>5}  Product")
-    print(f"  {'-----':>5}  {'-' * 65}")
-
-    for product, count in sorted_products:
-        display = (product[:68] + "...") if len(product) > 68 else product
-        print(f"  {count:>5,}  {display}")
-
-    print(
-        f"\n[*] Use any keyword above with -q, e.g.:\n"
-        f'    python3 find_gbk_features.py -i {args.input.name} -q "bacteriocin"\n'
-    )
 
     if args.output:
         tsv_rows = [{"Product": p, "Count": c} for p, c in sorted_products]
         _write_tsv(tsv_rows, args.output)
+        print(
+            f"[*] {len(sorted_products):,} unique products written to '{args.output}'.\n",
+            file=sys.stderr,
+        )
+    else:
+        print(f"\n[*] Product annotations in {scope}")
+        print(f"[*] Total CDS/RNA features scanned: {total_features:,}")
+        print(
+            f"[*] Excluded {hypo_count:,} 'hypothetical protein' entries "
+            f'(use -q "hypothetical" to search for them)'
+        )
+        if args.min_count > 1:
+            hidden = len(counter) - len(filtered)
+            print(
+                f"[*] Showing products with count >= {args.min_count} "
+                f"({hidden:,} rare/singleton entries hidden)"
+            )
+        print(f"[*] {len(sorted_products):,} unique products:\n")
+        print(f"  {'Count':>5}  Product")
+        print(f"  {'-----':>5}  {'-' * 65}")
+
+        for product, count in sorted_products:
+            display = (product[:68] + "...") if len(product) > 68 else product
+            print(f"  {count:>5,}  {display}")
+
+        print(
+            f"\n[*] Use any keyword above with -q, e.g.:\n"
+            f'    python3 find_gbk_features.py -i {args.input.name} -q "bacteriocin"\n'
+        )
 
 
 def run_sequence_dump(args) -> None:
