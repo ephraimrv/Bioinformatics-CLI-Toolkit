@@ -15,13 +15,34 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
+    v1.2.0: Fixed three issues found during code review.
+    (1) ``-m/--motif`` advertised IUPAC support but raw ambiguity codes
+    (W, R, Y, etc.) were passed directly to ``re.compile()``, which has no
+    concept of them — confirmed empirically that "TATAWAW" matched zero
+    times against a sequence containing the valid instance "TATAAAA".
+    Now uses ``utils.translate_iupac_to_regex()`` (shared with
+    ``regulon_scanner.py``, which had the identical bug) before compiling.
+    (2) The motif TSV table was previously appended to the bottom of the
+    output ``.fasta`` file, corrupting it for any standard FASTA parser
+    (BLAST, MEME, FIMO) — confirmed the appended lines contain characters
+    outside any valid sequence alphabet. Motifs now go to a sibling
+    ``.tsv`` file instead, matching ``target_promoter_pipeline.py``.
+    (3) ``_get_genome_label()`` only matched ``CDS`` features when looking
+    up the organism/strain label, so any mRNA-only or non-coding RNA
+    locus tag fell back to the generic "unknown" label. The actual
+    coordinate extraction (``utils.extract_upstream_sequence()``) had the
+    same restriction and was fixed the same way in utils.py v1.4.0, which
+    this script now relies on transitively — without that fix, this
+    script would have raised "Locus tag not found" before ever reaching
+    the label lookup, regardless of this function's own fix.
+
 Example:
     python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 import re
 import sys
@@ -37,7 +58,12 @@ except ImportError:
         "ERROR: Biopython is required but not installed.\n"
         "       Install it with: pip install biopython"
     )
-from utils import base_parser, wrap_fasta, extract_upstream_sequence
+from utils import (
+    base_parser,
+    wrap_fasta,
+    extract_upstream_sequence,
+    translate_iupac_to_regex,
+)
 
 
 def _get_genome_label(gbk_path: Path, locus_tag: str) -> tuple[str, str]:
@@ -60,8 +86,14 @@ def _get_genome_label(gbk_path: Path, locus_tag: str) -> tuple[str, str]:
     try:
         for record in SeqIO.parse(gbk_path, "genbank"):
             for feature in record.features:
-                if feature.type != "CDS":
-                    continue
+                # No feature-type restriction here deliberately: a
+                # /locus_tag is unique within a genome regardless of which
+                # feature type carries it. The previous CDS-only check
+                # caused this function to fall back to "unknown" for any
+                # mRNA-only or non-coding RNA (tRNA/rRNA/ncRNA) locus tag,
+                # even though utils.extract_upstream_sequence() (called
+                # before this function, and fixed the same way) already
+                # successfully resolves those same locus tags.
                 if locus_tag not in feature.qualifiers.get("locus_tag", []):
                     continue
 
@@ -131,8 +163,18 @@ def find_motif_regex_iterator(
     """
     if not sequence or not regex_pattern:
         return
+    # Translate IUPAC ambiguity codes (W, R, Y, S, K, M, B, D, H, V, N) into
+    # regex character classes before compiling. Python's re module has no
+    # concept of these codes — compiling the raw pattern would search for
+    # the literal letter (e.g. "W"), which never appears in a real DNA
+    # sequence, so any motif using ambiguity codes would silently match
+    # nothing. Confirmed empirically: "TATAWAW" found zero hits against a
+    # sequence containing the valid TATA-box instance "TATAAAA" before this
+    # fix. Hand-written regex syntax in the motif (brackets, quantifiers,
+    # groups) is left untouched — see translate_iupac_to_regex()'s docstring.
+    translated_pattern = translate_iupac_to_regex(regex_pattern)
     try:
-        safe_pattern = re.compile(f"(?=({regex_pattern}))", re.IGNORECASE)
+        safe_pattern = re.compile(f"(?=({translated_pattern}))", re.IGNORECASE)
     except re.error as e:
         raise ValueError(f"Invalid regex pattern provided: {regex_pattern}") from e
 
@@ -222,6 +264,16 @@ def main() -> None:
             )
 
         if args.output:
+            # Write strict FASTA: header + sequence ONLY. Previously a TSV
+            # motif table was appended below the sequence in the same
+            # .fasta file. FASTA is a strict two-line-type format (header
+            # lines starting with '>', sequence lines); appending tab-
+            # delimited text with a '#' comment line corrupts the file for
+            # any standard parser (BLAST, MEME, FIMO) — confirmed
+            # empirically that the appended lines contain characters
+            # outside any valid sequence alphabet. The motif table now
+            # goes to a sibling .tsv file instead, matching the pattern
+            # already used in target_promoter_pipeline.py.
             with open(args.output, "w", encoding="utf-8") as out_file:
                 # NCBI-style FASTA header with | separators
                 fasta_header = (
@@ -234,18 +286,23 @@ def main() -> None:
                 out_file.write(f"{fasta_header}\n")
                 out_file.write(f"{wrap_fasta(upstream_seq)}\n")
 
-                # TSV motif appendix: position is TSS-relative (negative = upstream)
-                if motifs:
-                    out_file.write(
-                        "\n# Position_Relative_to_TSS\tMotif_Strand\tSequence\n"
-                    )
-                    for pos, seq, motif_strand in motifs:
-                        out_file.write(f"{pos}\t{motif_strand}\t{seq}\n")
-
             print(
-                f"[*] Success! {len(motifs)} motif(s) found. Written to {args.output.resolve()}",
+                f"[*] Success! FASTA written to {args.output.resolve()}",
                 file=sys.stderr,
             )
+
+            if motifs:
+                tsv_path = args.output.with_suffix(".tsv")
+                with open(tsv_path, "w", encoding="utf-8") as tsv_file:
+                    tsv_file.write("Position_Relative_to_TSS\tMotif_Strand\tSequence\n")
+                    for pos, seq, motif_strand in motifs:
+                        tsv_file.write(f"{pos}\t{motif_strand}\t{seq}\n")
+                print(
+                    f"[*] {len(motifs)} motif(s) found. Written to {tsv_path.resolve()}",
+                    file=sys.stderr,
+                )
+            else:
+                print("[*] No motifs found.", file=sys.stderr)
 
         else:
             print("\n--- UPSTREAM SEQUENCE ---", file=sys.stderr)
