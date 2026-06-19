@@ -23,7 +23,7 @@ ANNOTATION NORMALIZATION:
     This handles the most common cross-pipeline annotation inconsistencies.
     NOTE: Abbreviation-vs-full-name discrepancies ("atpA" vs "ATP synthase
     subunit alpha") cannot be resolved by text normalization. They require
-    sequence-based clustering via gbk_ortholog_finder.py.
+    sequence-based clustering via pairwise_homolog_finder.py.
 
 OUTPUT SORT ORDER (most to least conserved):
     1. Number of genomes found        (Descending — most conserved first)
@@ -121,7 +121,7 @@ def _normalize_product(product: str) -> str:
 
     Limitation: Cannot resolve abbreviation-vs-full-name discrepancies
     (e.g., "atpA" vs "ATP synthase subunit alpha"). These require
-    sequence-based clustering. See gbk_ortholog_finder.py.
+    sequence-based clustering. See pairwise_homolog_finder.py.
 
     Args:
         product: Raw /product qualifier string from a GenBank CDS feature.

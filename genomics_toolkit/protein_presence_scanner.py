@@ -15,7 +15,7 @@ matrix per genome, with locus tag and product for each hit.
 
 Important:
     This tool uses EXACT substring matching. A single amino acid substitution
-    will cause a miss. For divergent homolog detection, use gbk_ortholog_finder.py.
+    will cause a miss. For divergent homolog detection, use pairwise_homolog_finder.py.
 
     Use --raw to skip bacteriocin core trimming and search with the full
     pasted sequence. Required for non-bacteriocin targets.
