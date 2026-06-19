@@ -94,6 +94,23 @@ Note:
     publication. Correct attribution is requested when used in derivative works.
     Released under the MIT License. See LICENSE in the repository root.
 
+    v1.7: Fixed a critical data-loss bug in ``extract_proteins_from_gbk()``
+    and ``_load_reference_proteins()``. Both previously defaulted every CDS
+    lacking a ``/locus_tag`` qualifier to the literal string ``"UNKNOWN"``.
+    On files where ``/locus_tag`` is absent entirely — common for
+    eukaryotic assemblies, GFF3-to-GenBank conversions, and some draft
+    genomes — every CDS in the file collided on that one dictionary key,
+    and the longest-isoform-wins deduplication silently discarded all but
+    the single longest CDS in the whole file. Confirmed empirically: a
+    simulated 15,000-CDS file with no locus_tag annotations dropped to
+    exactly 1 surviving protein. Both functions now use
+    ``_resolve_identifier()``, a fallback hierarchy (locus_tag ->
+    protein_id -> gene -> contig-ID + coordinates) that always yields a
+    safe, sufficiently-unique key — the final coordinate fallback includes
+    the parent record's ID specifically because coordinates alone are only
+    unique within a single contig, and fragmented draft assemblies
+    routinely have many small contigs starting near position 0.
+
 Example:
     Bacteriocin screen with signal peptide trimming and domain-centric search::
 
@@ -118,7 +135,7 @@ Example:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.6"
+__version__ = "1.7"
 
 import sys
 import argparse
@@ -376,6 +393,81 @@ def get_args() -> argparse.Namespace:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# IDENTIFIER FALLBACK (fixes the "UNKNOWN" dictionary-collision data-loss bug)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_identifier(feature, record_id: str) -> str:
+    """Resolves a unique grouping key for a CDS feature, with safe fallbacks.
+
+    RefSeq bacterial GenBank files always carry ``/locus_tag``, but many
+    eukaryotic assemblies, GFF3-to-GenBank conversions (MAKER, Augustus),
+    and draft genomes omit it entirely. Previously this function's caller
+    defaulted every such feature to the literal string ``"UNKNOWN"`` — on
+    a file where NO feature has a locus_tag, every one of potentially
+    thousands of CDS features collided on that single dictionary key, and
+    the longest-isoform-wins logic in ``extract_proteins_from_gbk()`` /
+    ``_load_reference_proteins()`` silently discarded all but the single
+    longest CDS in the entire file. Confirmed empirically: a simulated
+    15,000-CDS file with no locus_tag annotations dropped to exactly 1
+    surviving protein.
+
+    Fallback order (each step only used if the previous one is empty):
+      1. ``/locus_tag``    — standard, shared across splice isoforms of one
+                             gene (the correct grouping key when present).
+      2. ``/protein_id``   — typically unique PER ISOFORM rather than per
+                             gene, so falling back to it means isoform
+                             deduplication won't collapse multiple isoforms
+                             together for this feature. That's an accepted,
+                             far smaller cost than the alternative (total
+                             data loss): keeping a few extra near-duplicate
+                             isoform entries is harmless; losing 99.99% of
+                             the file's proteins is not.
+      3. ``/gene``         — also typically shared across isoforms of one
+                             gene, so this restores correct isoform grouping
+                             for files that have gene symbols but neither of
+                             the two qualifiers above.
+      4. ``record.id`` + genomic coordinates — absolute last resort,
+                             mathematically guaranteed unique. The contig/
+                             record ID is included deliberately: coordinates
+                             ALONE are only unique within a single contig,
+                             and fragmented draft assemblies routinely have
+                             many small contigs each starting near position
+                             0 — omitting the contig ID would silently
+                             reintroduce the same collision bug this
+                             function exists to prevent, just at a smaller,
+                             rarer scale. Confirmed empirically: two
+                             different contigs each with a CDS at the same
+                             coordinates collide under a coordinates-only
+                             fallback.
+
+    Args:
+        feature:   A Biopython SeqFeature (CDS) to resolve an identifier for.
+        record_id: The parent record's ``.id`` (contig/chromosome name),
+                   used only in the final coordinate-based fallback.
+
+    Returns:
+        A non-empty string suitable for use as a deduplication dictionary
+        key. Never ``"UNKNOWN"`` or any other shared constant.
+    """
+    identifier = feature.qualifiers.get("locus_tag", [""])[0]
+    if identifier:
+        return identifier
+
+    identifier = feature.qualifiers.get("protein_id", [""])[0]
+    if identifier:
+        return identifier
+
+    identifier = feature.qualifiers.get("gene", [""])[0]
+    if identifier:
+        return identifier
+
+    start = int(feature.location.start)
+    end = int(feature.location.end)
+    return f"UNANNOTATED_{record_id}_{start}_{end}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # STEP 2: EXTRACT PROTEINS FROM QUERY GBK
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -403,7 +495,8 @@ def extract_proteins_from_gbk(
         verbose:      If ``True``, print details for each protein retained.
 
     Returns:
-        List of ``Protein`` objects, one per distinct locus_tag.
+        List of ``Protein`` objects, one per distinct resolved identifier
+        (locus_tag, or a safe fallback — see ``_resolve_identifier()``).
     """
     print(f"\n[*] Extracting proteins from query: {gbk_path.name}", file=sys.stderr)
 
@@ -419,7 +512,7 @@ def extract_proteins_from_gbk(
             if not translation:
                 continue
 
-            locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+            locus_tag = _resolve_identifier(feature, record.id)
             product = feature.qualifiers.get("product", ["Unknown product"])[0]
             full_length = len(translation)
 
@@ -698,8 +791,9 @@ def _load_reference_proteins(
                     protein so that ``cmp_seq`` is the trimmed mature core.
 
     Returns:
-        List of ``_RefProtein`` objects, one per distinct locus_tag, with
-        pre-computed comparison data.
+        List of ``_RefProtein`` objects, one per distinct resolved
+        identifier (locus_tag, or a safe fallback — see
+        ``_resolve_identifier()``), with pre-computed comparison data.
     """
     locus_best: dict[str, _RefProtein] = {}
     skipped_zero_length = 0
@@ -714,7 +808,7 @@ def _load_reference_proteins(
                 continue
 
             total_candidates += 1
-            locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+            locus_tag = _resolve_identifier(feature, record.id)
             full_length = len(translation)
 
             # Pre-compute the comparison sequence and its k-mers right here.

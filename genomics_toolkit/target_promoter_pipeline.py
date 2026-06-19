@@ -103,7 +103,7 @@ from pathlib import Path
 # script are automatically inherited here.
 
 try:
-    from gbk_ortholog_finder import extract_proteins_from_gbk, find_orthologs
+    from pairwise_homolog_finder import extract_proteins_from_gbk, find_homologs
 except ImportError as e:
     sys.exit(
         f"[!] Cannot import from gbk_ortholog_finder.py.\n"
@@ -320,9 +320,9 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # find_orthologs() in gbk_ortholog_finder.py calls SeqIO.parse() directly
+    # find_homologs() in gbk_ortholog_finder.py calls SeqIO.parse() directly
     # and expects a single file path — it does not handle directories.
-    # We resolve the directory here and call find_orthologs() per file,
+    # We resolve the directory here and call find_homologs() per file,
     # then aggregate all hits. This mirrors how Step 3 handles directories.
     ref_files: list[Path] = []
     if args.reference.is_dir():
@@ -343,7 +343,7 @@ def main() -> None:
     all_hits = []
     for ref_file in ref_files:
         print(f"    Searching {ref_file.name}...", file=sys.stderr)
-        file_hits = find_orthologs(
+        file_hits = find_homologs(
             query_proteins=query_proteins,
             ref_path=ref_file,
             min_identity=args.identity,

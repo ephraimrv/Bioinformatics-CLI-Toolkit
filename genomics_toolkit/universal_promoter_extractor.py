@@ -69,6 +69,40 @@ Note:
     This function's own signature, return contract, and truncation-warning
     behavior are unchanged; only the internal slicing math moved.
 
+    v1.6.0: Fixed a critical data-loss bug, mirroring the one just fixed
+    in gbk_ortholog_finder.py. Every locus_tag extraction site in this
+    file previously defaulted features lacking ``/locus_tag`` to the
+    literal string ``"UNKNOWN"``. On a file where ``/locus_tag`` is
+    absent entirely (common for eukaryotic assemblies, GFF3-to-GenBank
+    conversions, draft genomes), every such feature collided on that one
+    key. Confirmed empirically: 50 keyword-matching CDS collapsed to 1
+    entry in Pass 1, and 5,000 unannotated mRNA features across an entire
+    simulated genome collapsed into a single fabricated "super-gene"
+    spanning the most extreme min/max coordinates in the file. All six
+    extraction sites (both branches of ``extract_regulatory_regions()``
+    and ``extract_by_loci()``) now use ``_resolve_identifier()`` — the
+    same locus_tag -> protein_id -> gene -> coordinate fallback hierarchy
+    as ``gbk_ortholog_finder.py``, using an identical coordinate-fallback
+    string format so the two scripts always agree on an ID for the same
+    feature (critical for ``target_promoter_pipeline.py``, which passes
+    IDs from one script's output into the other's ``extract_by_loci()``
+    lookup).
+
+    A second, subtler issue was found and fixed in the same pass: simply
+    swapping in ``_resolve_identifier()`` is not sufficient for the
+    eukaryotic two-pass design when a gene has NO locus_tag/protein_id/
+    gene at all. The CDS pass and the mRNA pass call the resolver on
+    DIFFERENT features, and CDS coordinates routinely differ from mRNA
+    coordinates for the same gene (UTRs) — so the two passes' fallback
+    IDs would never string-match even after the basic fix, silently
+    dropping every fully-unannotated eukaryotic gene. Both eukaryote
+    branches now also track each fallback-keyed CDS's coordinate span and,
+    when an mRNA's own fallback ID doesn't directly match, correlate it
+    via coordinate containment instead (``_find_overlapping_fallback_id()``)
+    — does this mRNA's span fully contain a known fallback CDS's span?
+    Genes with real locus_tag/protein_id/gene annotations are unaffected;
+    they still match directly as before.
+
 Examples:
     # Prokaryote (auto-detected)
     $ python3 universal_promoter_extractor.py \
@@ -93,7 +127,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 import sys
 import argparse
@@ -209,6 +243,116 @@ def _extract_upstream_seq(
     return upstream_seq, actual_upstream
 
 
+# ── Identifier resolution (fixes the "UNKNOWN" collision data-loss bug) ────────
+
+
+def _resolve_identifier(feature, record_id: str) -> str:
+    """Resolves a unique grouping key for a feature, with safe fallbacks.
+
+    Mirrors ``gbk_ortholog_finder._resolve_identifier()`` exactly — same
+    fallback order, same coordinate-fallback string format — so that the
+    two scripts always agree on an identifier for the same feature. This
+    matters specifically for ``extract_by_loci()``, the bridge function
+    ``target_promoter_pipeline.py`` uses to look up loci that
+    ``gbk_ortholog_finder.py`` already found: if the two scripts computed
+    fallback IDs differently, a homolog found under one script's ID would
+    never be found by the other's lookup.
+
+    Previously this script (like gbk_ortholog_finder.py before its own
+    fix) defaulted every feature lacking ``/locus_tag`` to the literal
+    string ``"UNKNOWN"``. On a file where ``/locus_tag`` is absent
+    entirely, every such feature collided on that one key — confirmed
+    empirically to collapse an entire eukaryotic genome's worth of mRNA
+    features into a single fabricated "super-gene" spanning the most
+    extreme min/max coordinates in the file.
+
+    Fallback order (each step only used if the previous one is empty):
+      1. ``/locus_tag``
+      2. ``/protein_id``
+      3. ``/gene``
+      4. ``record_id`` + genomic coordinates (guaranteed unique; includes
+         the contig/record ID specifically because coordinates alone are
+         only unique within one contig).
+
+    Args:
+        feature:   A Biopython SeqFeature to resolve an identifier for.
+        record_id: The parent record's ``.id`` (contig/chromosome name),
+                   used only in the final coordinate-based fallback.
+
+    Returns:
+        A non-empty string suitable for use as a deduplication/lookup key.
+        Never ``"UNKNOWN"`` or any other shared constant. Coordinate-
+        fallback identifiers are prefixed ``"UNANNOTATED_"`` so callers can
+        detect them (see ``_find_overlapping_fallback_id()`` below).
+    """
+    identifier = feature.qualifiers.get("locus_tag", [""])[0]
+    if identifier:
+        return identifier
+
+    identifier = feature.qualifiers.get("protein_id", [""])[0]
+    if identifier:
+        return identifier
+
+    identifier = feature.qualifiers.get("gene", [""])[0]
+    if identifier:
+        return identifier
+
+    start = int(feature.location.start)
+    end = int(feature.location.end)
+    return f"UNANNOTATED_{record_id}_{start}_{end}"
+
+
+def _find_overlapping_fallback_id(
+    mrna_start: int,
+    mrna_end: int,
+    fallback_cds_spans: dict[str, tuple[int, int]],
+) -> str | None:
+    """Correlates an unannotated mRNA to its CDS via coordinate containment.
+
+    Why this exists: when a gene has NO ``/locus_tag``, ``/protein_id``, or
+    ``/gene`` qualifier anywhere, ``_resolve_identifier()`` falls back to a
+    coordinate-based string built from whichever feature it was called on.
+    The CDS pass and the mRNA pass call it on DIFFERENT features — and CDS
+    coordinates routinely differ from mRNA coordinates for the same gene,
+    because the mRNA spans the full transcript (5' UTR + exons + 3' UTR)
+    while the CDS spans only the coding portion (ATG to stop). Confirmed
+    concretely: a CDS at 1500-2800 and its own mRNA at 1200-3100 (same
+    gene, no shared qualifiers) resolve to two DIFFERENT fallback strings
+    even though they're the same gene — so a literal string match between
+    the CDS pass's identifier and the mRNA pass's identifier would never
+    succeed for this case, silently dropping every fully-unannotated
+    eukaryotic gene even after the basic UNKNOWN-collision fix.
+
+    This function instead checks which (if any) already-known fallback-ID
+    CDS span is fully CONTAINED within the mRNA's span — i.e. the mRNA's
+    transcript structurally includes this CDS's coding region, which is
+    exactly the UTR relationship described above. This correctly
+    correlates the two without relying on matching qualifier text that
+    doesn't exist for either feature.
+
+    Args:
+        mrna_start:         0-based mRNA feature start coordinate.
+        mrna_end:           0-based mRNA feature end coordinate.
+        fallback_cds_spans: Dict mapping fallback CDS identifier ->
+                             (cds_start, cds_end), built during the CDS
+                             pass for every CDS whose identifier was
+                             itself a coordinate fallback (i.e. starts
+                             with ``"UNANNOTATED_"``).
+
+    Returns:
+        The matching CDS's fallback identifier if exactly one fallback CDS
+        span is contained within the mRNA's span, else ``None``. In the
+        rare case of multiple contained spans (e.g. an unusual nested
+        annotation), the first one found is used — this is a known,
+        accepted simplification rather than an attempt to disambiguate
+        genuinely ambiguous nested annotations.
+    """
+    for cds_id, (cds_start, cds_end) in fallback_cds_spans.items():
+        if mrna_start <= cds_start and cds_end <= mrna_end:
+            return cds_id
+    return None
+
+
 # ── Core extraction functions ──────────────────────────────────────────────────
 
 
@@ -269,7 +413,7 @@ def extract_regulatory_regions(
                         if not any(k.lower() in product.lower() for k in keywords):
                             continue
 
-                        locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+                        locus_tag = _resolve_identifier(feature, record.id)
                         start = int(feature.location.start)
                         end = int(feature.location.end)
                         strand = feature.location.strand
@@ -284,14 +428,28 @@ def extract_regulatory_regions(
                     # Pass 1 — collect keyword-matching locus_tags from CDS features.
                     # mRNA features often lack /product, so keyword matching is always
                     # done against CDS annotations regardless of extraction mode.
+                    #
+                    # fallback_cds_spans tracks the CDS coordinate span for every
+                    # entry whose identifier came from the coordinate fallback
+                    # (no locus_tag/protein_id/gene at all) — needed in Pass 2 to
+                    # correlate that gene's mRNA feature, since the mRNA's OWN
+                    # fallback identifier would be computed from different
+                    # coordinates (UTRs) and would never string-match this one.
+                    # See _find_overlapping_fallback_id()'s docstring.
                     keyword_loci: dict[str, str] = {}  # {locus_tag: product}
+                    fallback_cds_spans: dict[str, tuple[int, int]] = {}
                     for feature in record.features:
                         if feature.type != "CDS":
                             continue
                         product = feature.qualifiers.get("product", [""])[0]
                         if any(k.lower() in product.lower() for k in keywords):
-                            lt = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+                            lt = _resolve_identifier(feature, record.id)
                             keyword_loci[lt] = product
+                            if lt.startswith("UNANNOTATED_"):
+                                fallback_cds_spans[lt] = (
+                                    int(feature.location.start),
+                                    int(feature.location.end),
+                                )
 
                     if not keyword_loci:
                         continue
@@ -312,13 +470,29 @@ def extract_regulatory_regions(
                     for feature in record.features:
                         if feature.type != "mRNA":
                             continue
-                        locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
-                        if locus_tag not in keyword_loci:
-                            continue
-
                         start = int(feature.location.start)
                         end = int(feature.location.end)
                         strand = feature.location.strand
+
+                        locus_tag = _resolve_identifier(feature, record.id)
+                        if locus_tag not in keyword_loci:
+                            # Direct match failed. If this mRNA itself has no
+                            # locus_tag/protein_id/gene either, its fallback ID
+                            # was computed from ITS OWN coordinates — which
+                            # differ from the CDS's coordinates whenever the
+                            # gene has UTRs, so it will never string-match the
+                            # CDS pass's fallback ID for the same gene. Try
+                            # coordinate containment instead: does this mRNA's
+                            # span fully contain a known fallback CDS's span?
+                            if locus_tag.startswith("UNANNOTATED_"):
+                                matched = _find_overlapping_fallback_id(
+                                    start, end, fallback_cds_spans
+                                )
+                                if matched is None:
+                                    continue
+                                locus_tag = matched
+                            else:
+                                continue
 
                         if locus_tag not in locus_tss:
                             locus_tss[locus_tag] = {
@@ -452,7 +626,7 @@ def extract_by_loci(
                         if feature.type != "CDS":
                             continue
 
-                        locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+                        locus_tag = _resolve_identifier(feature, record.id)
                         if locus_tag not in target_set:
                             continue
 
@@ -493,15 +667,31 @@ def extract_by_loci(
                     # Pass 1 — collect product names from CDS features.
                     # mRNA features often lack /product, so we populate product
                     # names here and use them when yielding from mRNA features.
+                    #
+                    # fallback_cds_spans tracks the CDS coordinate span for every
+                    # requested ID that came from the coordinate fallback (no
+                    # locus_tag/protein_id/gene at all) — needed in Pass 2 to
+                    # correlate that gene's mRNA feature, whose own fallback ID
+                    # would be computed from different coordinates (UTRs) and
+                    # would never string-match this one. This is the exact
+                    # mechanism that lets this function find a locus that
+                    # gbk_ortholog_finder.py resolved via its own coordinate
+                    # fallback — see _find_overlapping_fallback_id()'s docstring.
                     cds_products: dict[str, str] = {}
+                    fallback_cds_spans: dict[str, tuple[int, int]] = {}
                     for feature in record.features:
                         if feature.type != "CDS":
                             continue
-                        lt = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+                        lt = _resolve_identifier(feature, record.id)
                         if lt in remaining:
                             cds_products[lt] = feature.qualifiers.get(
                                 "product", ["Unknown product"]
                             )[0]
+                            if lt.startswith("UNANNOTATED_"):
+                                fallback_cds_spans[lt] = (
+                                    int(feature.location.start),
+                                    int(feature.location.end),
+                                )
 
                     # Pass 2 — find the 5'-most TSS per locus across all isoforms.
                     # In eukaryotes, a single locus_tag can have multiple mRNA
@@ -518,15 +708,27 @@ def extract_by_loci(
                     for feature in record.features:
                         if feature.type != "mRNA":
                             continue
-                        locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
-                        if locus_tag not in target_set:
-                            continue
-                        if locus_tag in already_yielded:
-                            continue  # processed in a prior record
-
                         start = int(feature.location.start)
                         end = int(feature.location.end)
                         strand = feature.location.strand
+
+                        locus_tag = _resolve_identifier(feature, record.id)
+                        if locus_tag not in target_set:
+                            # Direct match failed. If this mRNA itself has no
+                            # locus_tag/protein_id/gene either, try coordinate
+                            # containment against a known fallback CDS span
+                            # for one of the requested target IDs.
+                            if locus_tag.startswith("UNANNOTATED_"):
+                                matched = _find_overlapping_fallback_id(
+                                    start, end, fallback_cds_spans
+                                )
+                                if matched is None:
+                                    continue
+                                locus_tag = matched
+                            else:
+                                continue
+                        if locus_tag in already_yielded:
+                            continue  # processed in a prior record
 
                         if locus_tag not in locus_tss:
                             locus_tss[locus_tag] = {
