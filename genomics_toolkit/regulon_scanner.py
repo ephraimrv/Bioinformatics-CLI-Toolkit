@@ -90,13 +90,43 @@ Note:
     same slice boundaries, same truncation handling, same genomic
     coordinates for motif hits.
 
+    v1.5.0: Fixed two issues found while validating criticism of the
+    sibling script gbk_promoter_finder.py, which advertises the same
+    "IUPAC/regex motif" support and had the identical bug.
+    (1) Raw IUPAC ambiguity codes (W, R, Y, S, K, M, B, D, H, V, N) were
+    passed directly to re.compile(), which has no concept of them —
+    confirmed empirically that "TATAWAW" matched zero times against a
+    sequence containing the valid instance "TATAAAA". Now translated via
+    utils.translate_iupac_to_regex() before compiling.
+    (2) A second, independent bug was found layered on top of the first:
+    _motif_pvalue() already correctly handles explicit "[TC]"-style
+    bracket notation, but did not recognize raw IUPAC letters at all —
+    it fell through to its "complex token, no constraint" branch for
+    them. Confirmed empirically: the same motif spelled "TATAWAW" vs
+    "TATA[AT]A[AT]" produced two different p-values (0.0024 vs 0.00088)
+    purely from spelling, with the raw-IUPAC spelling understating
+    significance. Fixed by translating the motif ONCE in main() and using
+    that single translated string for the search, the motif-length
+    estimate, and the p-value calculation — _motif_pvalue() itself didn't
+    need to change, since it already does the right thing given explicit
+    bracket notation.
+    Also replaced the shared "UNKNOWN" default for CDS features lacking
+    /locus_tag with a coordinate-based fallback (matching the format used
+    in pairwise_homolog_finder.py and universal_promoter_extractor.py) —
+    this script aggregates no data by locus_tag, so there was no data-loss
+    risk, but multiple untagged genes previously showed up identically as
+    "UNKNOWN" in the output with no way to distinguish them.
+    These fixes are unrelated to and fully compatible with v1.4.0's
+    slicing-arithmetic consolidation above — v1.5.0 builds on top of it
+    rather than replacing it.
+
 Example:
     $ python3 regulon_scanner.py -i C5_genome.gbk -u 200 -m "GCGCAG[CT]G[GT]T[TA]AAAT" -o regulon.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import re
 import sys
@@ -115,7 +145,12 @@ except ImportError:
         "       Install it with: pip install biopython"
     )
 
-from utils import base_parser, resolve_upstream_window, extract_upstream_window
+from utils import (
+    base_parser,
+    resolve_upstream_window,
+    extract_upstream_window,
+    translate_iupac_to_regex,
+)
 
 
 def _compute_background(gbk_path: Path, upstream_bp: int) -> dict[str, float]:
@@ -334,7 +369,16 @@ def stream_regulon_hits(
 
     Args:
         gbk_path:       Path to the GenBank file.
-        regex_pattern:  IUPAC/regex motif string. Matching is case-insensitive
+        regex_pattern:  IUPAC/regex motif string. IUPAC ambiguity codes
+                        (W, R, Y, S, K, M, B, D, H, V, N) are translated to
+                        regex character classes via
+                        ``utils.translate_iupac_to_regex()`` before
+                        compiling — raw codes passed directly to
+                        ``re.compile()`` are matched as literal characters
+                        and never match real DNA, confirmed empirically
+                        (e.g. "TATAWAW" found zero hits against a sequence
+                        containing the valid instance "TATAAAA").
+                        Matching is case-insensitive
                         by uppercasing the pattern (once, at compile time) and
                         every extracted upstream sequence (below) rather than
                         passing re.IGNORECASE through the regex engine for
@@ -347,7 +391,7 @@ def stream_regulon_hits(
         (rel_pos, matched_seq, motif_strand) tuples.
     """
     try:
-        safe_pattern = re.compile(f"(?=({regex_pattern.upper()}))")
+        safe_pattern = re.compile(f"(?=({translate_iupac_to_regex(regex_pattern)}))")
     except re.error as e:
         raise ValueError(f"Invalid regex pattern: '{regex_pattern}'") from e
 
@@ -369,12 +413,26 @@ def stream_regulon_hits(
                     warned_eukaryote = True
                 if feature.type == "CDS":
 
-                    locus_tag = feature.qualifiers.get("locus_tag", ["UNKNOWN"])[0]
+                    start = int(feature.location.start)
+                    end = int(feature.location.end)
+                    # Coordinate-based fallback instead of a shared "UNKNOWN"
+                    # string: this script is prokaryote-only and prokaryote
+                    # files always carry /locus_tag in practice, so this is a
+                    # low-probability edge case (e.g. raw Prodigal output
+                    # without Prokka/Bakta annotation) — but since results
+                    # here are yielded per-feature rather than aggregated
+                    # into a dict (no data-loss risk the way there was in
+                    # pairwise_homolog_finder.py), the only real cost of the
+                    # old default was traceability: every unlabeled gene in
+                    # a report would show the identical string "UNKNOWN" with
+                    # no way to tell them apart. Same coordinate-fallback
+                    # format used throughout the toolkit for consistency.
+                    locus_tag = feature.qualifiers.get("locus_tag", [""])[0]
+                    if not locus_tag:
+                        locus_tag = f"UNANNOTATED_{record.id}_{start}_{end}"
                     product = feature.qualifiers.get(
                         "product", ["hypothetical protein"]
                     )[0]
-                    start = int(feature.location.start)
-                    end = int(feature.location.end)
                     strand = feature.location.strand
 
                     # Extract upstream with boundary tracking. slice_start/
@@ -479,6 +537,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Translate IUPAC ambiguity codes to regex character classes ONCE here,
+    # and use this single translated string everywhere downstream (search,
+    # motif-length estimate, and p-value calculation). This matters beyond
+    # just the search: _motif_pvalue() already correctly handles explicit
+    # "[TC]"-style character classes, but does NOT recognize raw IUPAC
+    # letters (W, R, Y, ...) — it falls through to its "complex token, no
+    # constraint" branch for them, silently treating an ambiguous position
+    # as if it could be ANY base for free. Confirmed empirically: the same
+    # biological motif spelled as "TATAWAW" vs "TATA[AT]A[AT]" produced two
+    # different p-values (0.0024 vs 0.00088) purely from spelling, with the
+    # raw-IUPAC spelling UNDERSTATING significance. Translating once here,
+    # before either consumer sees the pattern, makes both correct and
+    # consistent without needing to change _motif_pvalue() itself — it
+    # already does the right thing once given explicit bracket notation.
+    translated_motif = translate_iupac_to_regex(args.motif)
+
     print(f"[*] Scanning genome    : {args.input.name}", file=sys.stderr)
     print(f"[*] Upstream region    : {args.upstream}bp", file=sys.stderr)
     print(f"[*] Motif              : {args.motif}", file=sys.stderr)
@@ -490,7 +564,9 @@ def main() -> None:
         # Results are collected into memory first so that BH q-values can be
         # computed across ALL matches from ALL genes before writing the TSV.
         print(f"[*] Collecting hits...", file=sys.stderr)
-        all_hits = list(stream_regulon_hits(args.input, args.motif, args.upstream))
+        all_hits = list(
+            stream_regulon_hits(args.input, translated_motif, args.upstream)
+        )
 
         total_genes_hit = len(all_hits)
         total_motifs_found = sum(len(h["matches"]) for h in all_hits)
@@ -513,7 +589,10 @@ def main() -> None:
         # Approximate motif length from regex: replace each [...] group with a
         # single placeholder character so each degenerate position counts as 1bp.
         # (Using '' instead of 'X' would undercount by one per degenerate position.)
-        approx_motif_len = len(re.sub(r"\[.*?\]", "X", args.motif))
+        # Uses translated_motif so a raw IUPAC code (which becomes a bracket
+        # group after translation) is correctly counted as 1bp too, exactly
+        # like a hand-written bracket group already was.
+        approx_motif_len = len(re.sub(r"\[.*?\]", "X", translated_motif))
 
         print(f"[*] Counting total windows tested...", file=sys.stderr)
         total_tests = _count_total_windows(args.input, args.upstream, approx_motif_len)
@@ -531,7 +610,9 @@ def main() -> None:
         # position (motif footprint probability, not the specific instance).
         # All hits from the same motif scan share this single p-value — correct
         # for a binary regex scanner where every match satisfies the same pattern.
-        motif_p = _motif_pvalue(args.motif, bg)
+        # Uses translated_motif so raw IUPAC codes are correctly constrained
+        # (see the note above translated_motif's assignment).
+        motif_p = _motif_pvalue(translated_motif, bg)
         print(f"    Motif p-value       : {motif_p:.3e}", file=sys.stderr)
 
         all_pvalues: list[float] = [motif_p] * sum(len(h["matches"]) for h in all_hits)
