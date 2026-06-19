@@ -1,8 +1,5 @@
-#!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 Jan Ephraim R. Vallente
-
-r"""Remote BLAST Runner
+r"""
+Remote BLAST Runner
 
 Automates NCBI remote BLAST searches over sequences in a FASTA file.
 Handles three sequence selection modes, writes TSV output with column
@@ -57,12 +54,67 @@ NCBI USAGE POLICY:
        above your e-value threshold. Try a less stringent -e value.
     4. Use --debug to print the exact BLAST command and all server messages.
 
-Note:
-    Associated with ongoing, unpublished research (manuscript in
-    preparation). Correct attribution is requested when used in
-    derivative works.
+KNOWN LIMITATION — `-max_target_seqs` is NOT "top N best hits":
+    This script passes --max-hits straight through to BLAST+'s
+    -max_target_seqs, which is widely (and incorrectly) assumed to return
+    the N highest-scoring database hits. Shah, Nute, Warnow & Pop (2019,
+    Bioinformatics 35(9):1613-1614, doi:10.1093/bioinformatics/bty833)
+    documented that the parameter instead limits how many hits are kept
+    from the *search order* the algorithm encounters them in — not
+    necessarily the N best by score. NCBI attributed part of the original
+    severity to an over-aggressive internal optimization and patched it in
+    BLAST+ 2.8.1 (2018); on current BLAST+ versions the worst outcome (the
+    single best hit being silently dropped) is far less likely, but the
+    parameter still does not guarantee a true top-N-by-score ranking.
 
-Examples:
+    Practical takeaway for this toolkit: treat --max-hits as a ceiling on
+    how many candidate hits to retrieve for downstream filtering, not as a
+    statement that hit #1 in the output is necessarily the best possible
+    match. If a manuscript's methods section reports "the top hit" from
+    this script's output, that claim rests on the e-value/bitscore ranking
+    of the RETURNED hits, not on an NCBI-side guarantee that no better hit
+    was excluded before reaching you. For homology claims where this
+    distinction matters, set --max-hits well above what you need (e.g. 250
+    instead of 10) so the ranking step happens on your side, in pandas,
+    after the fact.
+
+RESUMING INTERRUPTED RUNS (--resume):
+    A companion file <output>.progress is written alongside the TSV output,
+    one line per sequence ID that has been DEFINITIVELY attempted (either it
+    returned hits, or it returned zero hits cleanly — returncode 0 either
+    way). Sequences that timed out or failed (non-zero returncode) are NOT
+    marked as attempted, so a re-run will retry exactly those.
+
+    --resume reads that file, skips every sequence ID already in it, and
+    APPENDS new results to the existing output TSV instead of overwriting
+    it. Without --resume, output is always overwritten fresh, same as
+    before.
+
+    Only supported with the default outfmt 6 (tabular) — other formats
+    don't have a parseable column to confirm a hit-free success vs. a
+    silent failure, so --resume is ignored (with a warning) if -f is not 6.
+
+    Safe to combine with --range/--pick/--list: resume only affects which
+    of the SELECTED sequences are skipped, not which ones are selected.
+
+SEQUENCE-TYPE CHECK:
+    Before starting, a sample of the input is checked against the chosen
+    -p program (protein vs nucleotide) using a cheap heuristic: amino acids
+    E, F, I, L, P, Q, Z, J never appear in IUPAC nucleotide codes, so their
+    presence/absence is a fast (not perfect) signal of which alphabet the
+    file actually contains. This is advisory only — it prints a warning if
+    the input looks mismatched (e.g. a .fna file run with -p blastp) but
+    does not block the run, since short sequences can occasionally trip a
+    false positive.
+
+License: MIT
+
+Reproducibility:
+    Associated with upcoming research (manuscript in preparation).
+    Correct attribution is requested when used in derivative works.
+    See LICENSE in the repository root for full details.
+
+Example Usage:
     # Blast all sequences with defaults (blastp, nr, e-value 1e-10)
     $ python3 remote_blast.py -i proteins.faa
 
@@ -95,13 +147,18 @@ Examples:
 
     # Increase timeout for slow databases (default: 600s)
     $ python3 remote_blast.py -i proteins.faa --db refseq_protein --timeout 900
+
+    # Resume an interrupted run — skips sequences already completed,
+    # appends new results to the existing output instead of overwriting it
+    $ python3 remote_blast.py -i proteins.faa --resume
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import argparse
+import contextlib
 import shutil
 import subprocess
 import sys
@@ -139,6 +196,87 @@ DEFAULT_DB: dict[str, str] = {
 
 NCBI_MIN_DELAY = 5  # seconds between requests (NCBI etiquette: <=3 requests/sec)
 DEFAULT_TIMEOUT = 600  # seconds — 10 minutes (remote BLAST can be slow)
+
+# Programs whose QUERY is nucleotide. blastp's query is protein; blastn's and
+# blastx's query is nucleotide (blastx translates it on the fly before
+# comparing against a protein database). Used by the sequence-type check.
+EXPECTS_NUCLEOTIDE_QUERY: dict[str, bool] = {
+    "blastp": False,
+    "blastn": True,
+    "blastx": True,
+}
+
+# Amino-acid letters that are never valid IUPAC nucleotide codes (which only
+# use A C G T U N R Y S W K M B D H V). Their presence is a strong signal
+# that a sequence is protein, not nucleotide.
+_PROTEIN_SIGNATURE_CHARS = frozenset("EFILPQZJ")
+_NUCLEOTIDE_CHARS = frozenset("ACGTUN")
+_SEQUENCE_TYPE_SAMPLE_SIZE = 20  # cheap check — no need to scan the whole file
+
+
+def _looks_like_nucleotide(seq: str) -> bool:
+    """Heuristic guess at whether a sequence is nucleotide or protein.
+
+    Not a real alphabet parser — just a cheap, fast filter to catch the
+    "ran blastp on a .fna file" class of mistake before it burns NCBI
+    rate-limit allowance and a --timeout wait on garbage input.
+
+    Args:
+        seq: The sequence string to check.
+
+    Returns:
+        True if the sequence looks like nucleotide data, False if it
+        looks like protein (or is too ambiguous to call confidently —
+        defaults to False, i.e. "not clearly nucleotide", so the
+        nucleotide-vs-protein vote stays conservative).
+    """
+    seq_upper = seq.upper()
+    if not seq_upper:
+        return False
+    if any(c in _PROTEIN_SIGNATURE_CHARS for c in seq_upper):
+        return False
+    alpha_chars = [c for c in seq_upper if c.isalpha()]
+    if not alpha_chars:
+        return False
+    non_nucleotide = sum(1 for c in alpha_chars if c not in _NUCLEOTIDE_CHARS)
+    return (non_nucleotide / len(alpha_chars)) < 0.05
+
+
+def _check_sequence_type(records: list[SeqRecord], program: str) -> None:
+    """Prints a non-blocking warning if the input alphabet looks mismatched
+    with the chosen BLAST program (e.g. protein FASTA run with -p blastn).
+
+    Advisory only — never aborts the run. The heuristic in
+    _looks_like_nucleotide() can be wrong on short or unusual sequences,
+    so this is insurance against an obvious mix-up, not a hard gate.
+
+    Args:
+        records: The full list of parsed input sequences (sampled, not
+            all scanned, to keep this cheap).
+        program: The chosen BLAST program (blastp/blastn/blastx).
+    """
+    expects_nucleotide = EXPECTS_NUCLEOTIDE_QUERY[program]
+    sample = records[:_SEQUENCE_TYPE_SAMPLE_SIZE]
+    nuc_votes = sum(1 for r in sample if _looks_like_nucleotide(str(r.seq)))
+    looks_nucleotide = (nuc_votes / len(sample)) > 0.5 if sample else False
+
+    if expects_nucleotide and not looks_nucleotide:
+        print(
+            f"\n[!] WARNING: -p {program} expects a NUCLEOTIDE query, but the "
+            f"sampled input looks like PROTEIN data.\n"
+            f"    If this is a .faa file, you likely want -p blastp instead.\n"
+            f"    Continuing anyway — this is a heuristic, not a hard stop.",
+            file=sys.stderr,
+        )
+    elif not expects_nucleotide and looks_nucleotide:
+        print(
+            f"\n[!] WARNING: -p {program} expects a PROTEIN query, but the "
+            f"sampled input looks like NUCLEOTIDE data.\n"
+            f"    If this is a .fna/.fasta file, you likely want -p blastn "
+            f"or -p blastx instead.\n"
+            f"    Continuing anyway — this is a heuristic, not a hard stop.",
+            file=sys.stderr,
+        )
 
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
@@ -274,6 +412,17 @@ examples:
             "numbers, then exit. Use this to find locus tags for --range and --pick."
         ),
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip sequences already completed in a prior run (tracked in "
+            "<output>.progress) and append new results to the existing "
+            "output TSV instead of overwriting it. Only sequences that "
+            "timed out or failed are retried. Requires outfmt 6 (ignored "
+            "with a warning otherwise)."
+        ),
+    )
 
     # ── Sequence selection (mutually exclusive) ───────────────────────────────
     sel = parser.add_mutually_exclusive_group()
@@ -362,7 +511,7 @@ def _blast_one(
     max_hits: int,
     timeout: int,
     debug: bool,
-) -> str:
+) -> str | None:
     """Run BLAST on a single sequence and return the raw output string.
 
     Writes the sequence to a temporary file and passes it to BLAST via
@@ -381,7 +530,13 @@ def _blast_one(
         debug:    If True, print command and all NCBI messages to stderr.
 
     Returns:
-        BLAST output as a string, or "" on error/timeout.
+        On a completed request (returncode 0): the BLAST output string,
+        which may be "" if the search genuinely found zero hits — this
+        counts as DEFINITIVELY DONE for --resume purposes.
+        On timeout or a non-zero returncode: None — this counts as NOT
+        done, so --resume will retry it on the next run. Callers must
+        check `is None`, not truthiness, to tell these apart (an empty
+        string and None are different outcomes here).
     """
     tmp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False)
     tmp_path = tmp_file.name
@@ -459,7 +614,7 @@ def _blast_one(
                 f"for {record.id}.",
                 file=sys.stderr,
             )
-            return ""
+            return None
 
         return result.stdout
 
@@ -472,7 +627,7 @@ def _blast_one(
             f"        your IP. Wait 30-60 minutes and retry.",
             file=sys.stderr,
         )
-        return ""
+        return None
 
     except FileNotFoundError:
         sys.exit(
@@ -506,6 +661,20 @@ def main() -> None:
 
     output: Path = args.output or args.input.with_suffix(".blast.tsv")
     db: str = args.db or DEFAULT_DB[args.program]
+    progress_path: Path = output.with_name(output.stem + ".progress")
+
+    # --resume requires outfmt 6: that's the only format where a parseable
+    # qseqid-bearing row tells us a sequence's hits were genuinely written
+    # (vs. the run crashing mid-sequence). Other formats can still run fine,
+    # they just don't support --resume.
+    resume_active = args.resume
+    if args.resume and args.outfmt != 6:
+        print(
+            "\n[!] WARNING: --resume requires outfmt 6 (tabular). "
+            f"Ignoring --resume since -f {args.outfmt} was given.",
+            file=sys.stderr,
+        )
+        resume_active = False
 
     print(f"[*] Version       : {__version__}", file=sys.stderr)
     print(f"[*] Program       : {args.program}", file=sys.stderr)
@@ -515,6 +684,7 @@ def main() -> None:
     print(f"[*] Max hits/seq  : {args.max_hits}", file=sys.stderr)
     print(f"[*] Timeout/seq   : {args.timeout}s", file=sys.stderr)
     print(f"[*] Debug mode    : {'ON' if args.debug else 'off'}", file=sys.stderr)
+    print(f"[*] Resume        : {'ON' if resume_active else 'off'}", file=sys.stderr)
     print(f"[*] Input         : {args.input}", file=sys.stderr)
     print(f"[*] Output        : {output}", file=sys.stderr)
 
@@ -524,6 +694,9 @@ def main() -> None:
     if not records:
         sys.exit(f"[!] No sequences found in {args.input}")
     print(f"    Total in file   : {len(records)}", file=sys.stderr)
+
+    # ── Sequence-type sanity check (advisory only) ────────────────────────────
+    _check_sequence_type(records, args.program)
 
     # ── --list: print all IDs and exit ────────────────────────────────────────
     if args.list:
@@ -551,6 +724,37 @@ def main() -> None:
     print(f"    Selection mode  : {mode}", file=sys.stderr)
     print(f"    To blast        : {len(selected)} sequence(s)", file=sys.stderr)
 
+    # ── Resume: filter out already-completed sequences ───────────────────────
+    completed_ids: set[str] = set()
+    if resume_active and progress_path.exists():
+        completed_ids = {
+            line.strip()
+            for line in progress_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+
+    if completed_ids:
+        before = len(selected)
+        selected = [(n, r) for n, r in selected if r.id not in completed_ids]
+        skipped = before - len(selected)
+        print(
+            f"    Resuming        : {skipped} already-completed sequence(s) "
+            f"skipped (from {progress_path.name})",
+            file=sys.stderr,
+        )
+        if not selected:
+            print(
+                "\n[*] All selected sequences were already completed in a "
+                "previous run. Nothing to do.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+
+    # Append (not overwrite) only when there's genuine prior progress to
+    # continue. A --resume run against a file with no progress yet behaves
+    # exactly like a fresh run, just starts the bookkeeping for next time.
+    append_mode = bool(completed_ids)
+
     if args.delay < NCBI_MIN_DELAY:
         print(
             f"\n[!] Warning: --delay {args.delay}s is below the NCBI minimum "
@@ -565,9 +769,20 @@ def main() -> None:
     )
 
     hits_total = 0
+    out_mode = "a" if append_mode else "w"
 
-    with open(output, "w", encoding="utf-8") as out:
-        if args.outfmt == 6:
+    # Progress tracking is written whenever outfmt 6 is used, regardless of
+    # whether --resume was passed THIS run — so a future --resume always has
+    # something to work from, even if this particular run never needed it.
+    write_progress = args.outfmt == 6
+    progress_ctx = (
+        open(progress_path, out_mode, encoding="utf-8")
+        if write_progress
+        else contextlib.nullcontext()
+    )
+
+    with open(output, out_mode, encoding="utf-8") as out, progress_ctx as progress:
+        if args.outfmt == 6 and not append_mode:
             out.write(HEADER_ROW + "\n")
 
         for idx, (seq_num, record) in enumerate(selected):
@@ -589,18 +804,36 @@ def main() -> None:
                 args.debug,
             )
 
-            if blast_output.strip():
-                out.write(blast_output)
-                out.flush()
-                n_hits = len([l for l in blast_output.strip().splitlines() if l])
-                hits_total += n_hits
-                print(f"      -> {n_hits} hit(s)", file=sys.stderr)
-            else:
+            if blast_output is None:
+                # Failed/timed out — NOT marked as progress, so a --resume
+                # run will retry this exact sequence.
                 print(
-                    f"      -> No hits. "
-                    f"(Run with --debug to see what NCBI returned.)",
+                    f"      -> Failed/timed out."
+                    + (
+                        " Will retry on the next --resume run."
+                        if write_progress
+                        else ""
+                    ),
                     file=sys.stderr,
                 )
+            else:
+                if blast_output.strip():
+                    out.write(blast_output)
+                    out.flush()
+                    n_hits = len([l for l in blast_output.strip().splitlines() if l])
+                    hits_total += n_hits
+                    print(f"      -> {n_hits} hit(s)", file=sys.stderr)
+                else:
+                    print(
+                        f"      -> No hits. "
+                        f"(Run with --debug to see what NCBI returned.)",
+                        file=sys.stderr,
+                    )
+                # Definitively completed (hit or clean zero-hit) — safe to
+                # skip on a future --resume run.
+                if progress is not None:
+                    progress.write(record.id + "\n")
+                    progress.flush()
 
             if idx < len(selected) - 1:
                 print(f"      Waiting {args.delay}s...", file=sys.stderr)
@@ -610,9 +843,13 @@ def main() -> None:
     print(f"\n{'=' * 44}", file=sys.stderr)
     print(f"  BLAST COMPLETE", file=sys.stderr)
     print(f"{'=' * 44}", file=sys.stderr)
+    if completed_ids:
+        print(f"  Skipped (resumed) : {len(completed_ids)}", file=sys.stderr)
     print(f"  Sequences blasted : {len(selected)}", file=sys.stderr)
     print(f"  Total hits        : {hits_total}", file=sys.stderr)
     print(f"  Output written to : {output.resolve()}", file=sys.stderr)
+    if write_progress:
+        print(f"  Progress file     : {progress_path.resolve()}", file=sys.stderr)
     print(f"{'=' * 44}", file=sys.stderr)
 
 
