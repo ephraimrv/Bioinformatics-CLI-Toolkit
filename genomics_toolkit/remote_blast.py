@@ -37,7 +37,14 @@ SEQUENCE SELECTION MODES:
     (none)                         Blast every sequence in the file (default)
     --range LOCUS_START LOCUS_END  Blast a contiguous slice in file order
     --pick LOCUS_TAG [...]         Blast specific sequences by ID
-    --list                         Preview all IDs in the file and exit
+    --list                         Preview sequence IDs and exit — does NOT
+                                    run BLAST or touch NCBI. Without -o,
+                                    shows the first 20 sequences only (a
+                                    truncation notice covers the rest —
+                                    important for eukaryotic-scale FASTA
+                                    files with thousands of entries). With
+                                    -o, writes the full list as a TSV
+                                    instead of flooding the terminal with it.
 
 NCBI USAGE POLICY:
     Remote BLAST uses NCBI's public servers. A 5-second delay is enforced
@@ -151,11 +158,17 @@ Example Usage:
     # Resume an interrupted run — skips sequences already completed,
     # appends new results to the existing output instead of overwriting it
     $ python3 remote_blast.py -i proteins.faa --resume
+
+    # Preview sequence IDs without running BLAST. Use -o on a large
+    # (e.g. eukaryotic) FASTA to save the full list instead of truncating
+    # the terminal preview to the first 20.
+    $ python3 remote_blast.py -i eukaryote_proteome.faa --list
+    $ python3 remote_blast.py -i eukaryote_proteome.faa --list -o seq_list.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import argparse
 import contextlib
@@ -408,8 +421,10 @@ examples:
         "--list",
         action="store_true",
         help=(
-            "Print all sequence IDs in the input file with their position "
-            "numbers, then exit. Use this to find locus tags for --range and --pick."
+            "Preview sequence IDs and exit immediately — no BLAST, no NCBI "
+            "contact. Without -o, shows only the first 20 (truncated for "
+            "large files); with -o, writes the full list as a TSV instead "
+            "of printing it all. Use the ID with --range or --pick."
         ),
     )
     parser.add_argument(
@@ -454,6 +469,64 @@ examples:
 
 
 # ── Sequence selection ────────────────────────────────────────────────────────
+
+# Maximum sequence IDs shown on the terminal for --list without -o. Beyond
+# this, a truncation notice points to -o instead — important for eukaryotic
+# proteomes/transcriptomes, which can run into the tens of thousands of
+# sequences. Mirrors the --list-sequences convention used elsewhere in this
+# toolkit (find_gbk_features.py, extract_genome_region.py).
+_LIST_MAX_DISPLAY = 20
+
+
+def _run_list(records: list[SeqRecord], args: argparse.Namespace) -> None:
+    """Preview sequence IDs in the input FASTA, or save the full list to a TSV.
+
+    Without -o: prints the first _LIST_MAX_DISPLAY sequences to the
+    terminal for quick scouting, then a truncation notice — never the
+    entire file, which could be tens of thousands of entries for a
+    eukaryotic genome.
+
+    With -o: the TSV file IS the output. The terminal only gets a one-line
+    confirmation, not a second full copy of the list — same "file is the
+    output, terminal isn't a second output" rule used by
+    find_gbk_features.py's run_list_sequences().
+
+    This never touches BLAST or NCBI — it's pure local FASTA inspection,
+    so no '[*] Output: <path>.blast.tsv' line should ever appear here; that
+    line implies a BLAST run happened, which --list never does.
+
+    Args:
+        records: All sequences parsed from the input FASTA.
+        args: Parsed argument namespace (uses args.input, args.output).
+    """
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write("seq_num\tsequence_id\tlength\tdescription\n")
+            for i, rec in enumerate(records, 1):
+                desc = rec.description[len(rec.id) :].strip()
+                f.write(f"{i}\t{rec.id}\t{len(rec.seq)}\t{desc}\n")
+
+        print(
+            f"[*] {len(records):,} sequence(s) written to '{args.output}'.\n"
+            f"    Use the ID (sequence_id column) with --range or --pick.",
+            file=sys.stderr,
+        )
+        return
+
+    print(f"\nSequences in {args.input.name} ({len(records):,} total):\n")
+    for i, rec in enumerate(records[:_LIST_MAX_DISPLAY], 1):
+        desc = rec.description[len(rec.id) :].strip()
+        desc_col = f"  {desc[:60]}" if desc else ""
+        print(f"  [{i:>4}]  {rec.id:<20}{desc_col}")
+
+    if len(records) > _LIST_MAX_DISPLAY:
+        hidden = len(records) - _LIST_MAX_DISPLAY
+        print(f"  ... and {hidden:,} more. Use -o to save the full list to a TSV.")
+
+    print(
+        f"\n  Use the ID (second column) with --range or --pick.\n"
+        f"  Example: --range {records[0].id} {records[-1].id}"
+    )
 
 
 def _select_sequences(
@@ -647,6 +720,22 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if not args.input.exists():
+        sys.exit(f"[!] Input file not found: {args.input}")
+
+    # ── Load sequences ────────────────────────────────────────────────────────
+    # Loaded before anything else, since --list only needs this much and
+    # shouldn't have to wait on a BLAST+ install check or print BLAST-run
+    # settings (database, e-value, timeout...) that don't apply to it.
+    records = list(SeqIO.parse(args.input, "fasta"))
+    if not records:
+        sys.exit(f"[!] No sequences found in {args.input}")
+
+    # ── --list: preview and exit, before any BLAST-specific setup ────────────
+    if args.list:
+        _run_list(records, args)
+        sys.exit(0)
+
     # ── Fail-fast: check BLAST is installed before doing anything else ─────────
     if shutil.which(args.program) is None:
         sys.exit(
@@ -656,9 +745,6 @@ def main() -> None:
         )
 
     # ── Resolve defaults ──────────────────────────────────────────────────────
-    if not args.input.exists():
-        sys.exit(f"[!] Input file not found: {args.input}")
-
     output: Path = args.output or args.input.with_suffix(".blast.tsv")
     db: str = args.db or DEFAULT_DB[args.program]
     progress_path: Path = output.with_name(output.stem + ".progress")
@@ -687,29 +773,10 @@ def main() -> None:
     print(f"[*] Resume        : {'ON' if resume_active else 'off'}", file=sys.stderr)
     print(f"[*] Input         : {args.input}", file=sys.stderr)
     print(f"[*] Output        : {output}", file=sys.stderr)
-
-    # ── Load sequences ────────────────────────────────────────────────────────
-    print(f"\n[*] Loading sequences...", file=sys.stderr)
-    records = list(SeqIO.parse(args.input, "fasta"))
-    if not records:
-        sys.exit(f"[!] No sequences found in {args.input}")
     print(f"    Total in file   : {len(records)}", file=sys.stderr)
 
     # ── Sequence-type sanity check (advisory only) ────────────────────────────
     _check_sequence_type(records, args.program)
-
-    # ── --list: print all IDs and exit ────────────────────────────────────────
-    if args.list:
-        print(f"\nSequences in {args.input.name} ({len(records)} total):\n")
-        for i, rec in enumerate(records, 1):
-            desc = rec.description[len(rec.id) :].strip()
-            desc_col = f"  {desc[:60]}" if desc else ""
-            print(f"  [{i:>4}]  {rec.id:<20}{desc_col}")
-        print(
-            f"\n  Use the ID (second column) with --range or --pick.\n"
-            f"  Example: --range {records[0].id} {records[-1].id}"
-        )
-        sys.exit(0)
 
     # ── Apply selection ───────────────────────────────────────────────────────
     selected = _select_sequences(records, args)
