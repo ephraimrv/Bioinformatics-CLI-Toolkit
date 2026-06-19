@@ -4,7 +4,7 @@
 
 r"""Targeted Promoter Pipeline
 
-A bridge script that connects gbk_ortholog_finder.py and
+A bridge script that connects pairwise_homolog_finder.py and
 universal_promoter_extractor.py into a single automated workflow.
 
 Replaces homology_extractor.py, which used exact substring matching
@@ -24,6 +24,35 @@ WORKFLOW:
     Step 3  Collect the locus tags of all hits above identity/coverage thresholds.
     Step 4  Extract upstream regions for those loci using the target genome's mode
             (auto-detected from each reference file).
+    Step 5  (Optional, --dedup-identity) Collapse near-identical upstream DNA
+            sequences down to one representative each, so paralogs/recent gene
+            duplications don't masquerade as independent observations.
+
+WHY SEQUENCE-LEVEL REDUNDANCY MATTERS (--dedup-identity):
+    Step 3's locus-tag dedup only removes hits that point to the exact same
+    locus_tag (e.g. two query proteins both matching the same reference gene).
+    It does NOT catch the more common case: two or three DIFFERENT loci whose
+    upstream DNA is still 90%+ identical because they are paralogs from a
+    recent duplication, or near-identical strain variants pulled in from
+    multiple reference files.
+
+    If those near-duplicate sequences are fed into motif_discovery.py (or
+    MEME) as if they were independent observations, the same regulatory
+    signal gets counted multiple times. This inflates apparent motif
+    confidence/significance without adding real evidence — a problem if
+    you intend to report that significance in a manuscript.
+
+    --dedup-identity THRESHOLD performs greedy single-linkage clustering on
+    the extracted upstream DNA sequences themselves (local pairwise
+    alignment, identity = matches / alignment_length, BLAST/EMBOSS
+    convention — same definition used by pairwise_homolog_finder.py).
+    Sequences arrive already ordered by ortholog-hit identity (best matches
+    to the query first), so the first sequence in each redundant cluster —
+    the best-supported one — is kept as the representative; the rest are
+    logged to <stem>.redundancy.tsv (locus, matched representative, percent
+    identity) for full traceability, not silently discarded.
+
+    Off by default — existing output is unchanged unless you opt in.
 
 ORGANISM SUPPORT:
     Prokaryotic target genomes:
@@ -39,6 +68,8 @@ ORGANISM SUPPORT:
 
 OUTPUTS:
     <stem>.fasta       MEME-ready upstream sequences (wrapped at 60 chars).
+                       Contains only kept (non-redundant) sequences when
+                       --dedup-identity is used.
     <stem>.tsv         Extraction results table: one row per upstream region,
                        with columns for locus_tag, genome, contig, product,
                        strand, and upstream length.
@@ -46,13 +77,17 @@ OUTPUTS:
                        Step 2, with query/ref locus, identity, alignment
                        length, and source genome. Full version of the
                        truncated terminal display.
+    <stem>.redundancy.tsv  (Only with --dedup-identity) One row per DROPPED
+                       locus: which representative locus it matched and at
+                       what percent identity. Not written if no sequences
+                       were dropped.
 
 WHY THIS REPLACES homology_extractor.py:
     The old script used:
         if core_peptide in translation:
     This is exact substring matching — one amino acid substitution and
     the ortholog is silently missed. Real homology requires alignment,
-    which is what gbk_ortholog_finder.py provides.
+    which is what pairwise_homolog_finder.py provides.
 
 Note:
     Associated with ongoing, unpublished research (manuscript in
@@ -87,15 +122,32 @@ Examples:
         -r references/ \
         -o all_promoters.fasta \
         --mature --max-length 150 --identity 0.40
+
+    # Collapse near-identical paralog promoters before motif discovery
+    # (recommended whenever output will feed motif_discovery.py / MEME)
+    $ python3 target_promoter_pipeline.py \
+        -q C5_genome.gbk \
+        -r references/ \
+        -o all_promoters.fasta \
+        --dedup-identity 0.90
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import sys
 import argparse
 from pathlib import Path
+from dataclasses import dataclass
+
+try:
+    from Bio.Align import PairwiseAligner
+except ImportError:
+    sys.exit(
+        "ERROR: Biopython is required but not installed.\n"
+        "       Install it with: pip install biopython"
+    )
 
 # ── Import from existing toolkit scripts ──────────────────────────────────────
 # These are your two production scripts. This bridge adds NO new alignment or
@@ -106,7 +158,7 @@ try:
     from pairwise_homolog_finder import extract_proteins_from_gbk, find_homologs
 except ImportError as e:
     sys.exit(
-        f"[!] Cannot import from gbk_ortholog_finder.py.\n"
+        f"[!] Cannot import from pairwise_homolog_finder.py.\n"
         f"    Ensure it is in the same directory as this script.\n"
         f"    Details: {e}"
     )
@@ -128,6 +180,120 @@ except ImportError as e:
         f"    Ensure it is in the same directory as this script.\n"
         f"    Details: {e}"
     )
+
+# ── Module-level DNA aligner (created ONCE, reused for all dedup comparisons) ──
+# Local alignment (Smith-Waterman) with simple match/mismatch scoring — there is
+# no standard substitution matrix for raw nucleotides the way BLOSUM62 exists
+# for proteins, so a flat +1/-1 scheme is the conventional choice (same
+# approach EMBOSS/water uses for DNA-DNA identity). Only used when
+# --dedup-identity is supplied; otherwise never instantiated/called.
+_DNA_ALIGNER = PairwiseAligner()
+_DNA_ALIGNER.mode = "local"
+_DNA_ALIGNER.match_score = 1
+_DNA_ALIGNER.mismatch_score = -1
+_DNA_ALIGNER.open_gap_score = -2
+_DNA_ALIGNER.extend_gap_score = -1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REDUNDANCY FILTERING (--dedup-identity)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class PromoterRecord:
+    """One extracted upstream region, buffered before output so the optional
+    redundancy filter can compare all of them against each other first."""
+
+    locus: str
+    seq_id: str
+    genome_label: str
+    product: str
+    seq: str
+    actual_up: int
+    strand_symbol: str
+
+
+def _dna_identity(seq_a: str, seq_b: str) -> float:
+    """Computes percent identity between two DNA sequences via local alignment.
+
+    Mirrors the identity definition in pairwise_homolog_finder.calculate_identity()
+    (identical positions / alignment_length, the BLAST/EMBOSS convention) so
+    --dedup-identity thresholds are directly comparable to --identity thresholds
+    elsewhere in this toolkit.
+
+    Args:
+        seq_a: First DNA sequence.
+        seq_b: Second DNA sequence.
+
+    Returns:
+        Percent identity as a 0.0-1.0 fraction. Returns 0.0 for empty input
+        or if no alignment is found.
+    """
+    if not seq_a or not seq_b:
+        return 0.0
+
+    alignments = _DNA_ALIGNER.align(seq_a, seq_b)
+    best = next(iter(alignments), None)
+    if best is None:
+        return 0.0
+
+    aligned_a, aligned_b = best[0], best[1]
+    alignment_length = len(aligned_a)
+    if alignment_length == 0:
+        return 0.0
+
+    identical = sum(1 for a, b in zip(aligned_a, aligned_b) if a == b and a != "-")
+    return identical / alignment_length
+
+
+def deduplicate_promoters(
+    records: list[PromoterRecord], threshold: float
+) -> tuple[list[PromoterRecord], list[tuple[PromoterRecord, str, float]]]:
+    """Greedy single-linkage clustering on extracted upstream DNA sequences.
+
+    Processes records in the order given (which, as called from main(), is
+    ortholog-hit-identity order — best matches to the query first). For each
+    record, compares it against every representative kept so far; if its
+    identity to ANY existing representative meets or exceeds the threshold,
+    it is dropped as redundant and the first (best-supported) representative
+    is kept. This means cluster representatives are always the most
+    query-relevant member of their redundancy group, not an arbitrary pick.
+
+    This is O(n^2) pairwise alignments. Fine for the dozens-to-low-hundreds
+    of loci typical of a targeted promoter search; would need a smarter
+    approach (e.g. k-mer pre-filtering like pairwise_homolog_finder.py uses)
+    if ever applied to thousands of sequences.
+
+    Args:
+        records: Extracted promoter records, in priority order.
+        threshold: Minimum identity (0.0-1.0) to consider two sequences
+            redundant.
+
+    Returns:
+        A tuple of (kept_records, dropped) where dropped is a list of
+        (record, matched_representative_locus, identity) for every record
+        that was removed as redundant.
+    """
+    kept: list[PromoterRecord] = []
+    dropped: list[tuple[PromoterRecord, str, float]] = []
+
+    for rec in records:
+        best_identity = 0.0
+        best_rep: PromoterRecord | None = None
+        for rep in kept:
+            identity = _dna_identity(rec.seq, rep.seq)
+            if identity > best_identity:
+                best_identity = identity
+                best_rep = rep
+
+        if best_rep is not None and best_identity >= threshold:
+            dropped.append((rec, best_rep.locus, best_identity))
+        else:
+            kept.append(rec)
+
+    return kept, dropped
+
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
 
@@ -249,6 +415,24 @@ examples:
             "The query file is always treated as prokaryotic for protein extraction."
         ),
     )
+    parser.add_argument(
+        "--dedup-identity",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help=(
+            "Collapse near-identical upstream DNA sequences before writing "
+            "output (0.0-1.0). If a promoter is >= this fraction identical "
+            "to an already-kept promoter — e.g. a recent paralog or "
+            "duplicated gene — it is dropped and logged to "
+            "<stem>.redundancy.tsv; only the best-supported representative "
+            "is kept. Recommended before motif discovery (MEME / "
+            "motif_discovery.py), since near-duplicate sequences are not "
+            "statistically independent observations and can inflate "
+            "apparent motif significance. Off by default — suggested "
+            "value: 0.90."
+        ),
+    )
 
     return parser
 
@@ -267,12 +451,18 @@ def main() -> None:
     output = args.output or Path("targeted_promoters.fasta")
     tsv_output = output.with_suffix(".tsv")
     hits_tsv = output.with_stem(output.stem + ".hits").with_suffix(".tsv")
+    redundancy_tsv = output.with_stem(output.stem + ".redundancy").with_suffix(".tsv")
 
     # Validate inputs
     if not args.query.exists():
         sys.exit(f"[!] Query file not found: {args.query}")
     if not args.reference.exists():
         sys.exit(f"[!] Reference path not found: {args.reference}")
+    if args.dedup_identity is not None and not (0.0 <= args.dedup_identity <= 1.0):
+        sys.exit(
+            f"[!] --dedup-identity must be between 0.0 and 1.0 "
+            f"(got {args.dedup_identity})."
+        )
 
     print("=" * 60, file=sys.stderr)
     print("  TARGETED PROMOTER PIPELINE", file=sys.stderr)
@@ -290,6 +480,11 @@ def main() -> None:
         file=sys.stderr,
     )
     print(f"  Organism mode   : {args.mode}", file=sys.stderr)
+    print(
+        f"  Dedup identity  : "
+        f"{f'{args.dedup_identity * 100:.0f}% (DNA, local alignment)' if args.dedup_identity is not None else 'OFF'}",
+        file=sys.stderr,
+    )
     print("=" * 60, file=sys.stderr)
 
     # ── Step 1: Load query proteins ───────────────────────────────────────────
@@ -320,7 +515,7 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # find_homologs() in gbk_ortholog_finder.py calls SeqIO.parse() directly
+    # find_homologs() in pairwise_homolog_finder.py calls SeqIO.parse() directly
     # and expects a single file path — it does not handle directories.
     # We resolve the directory here and call find_homologs() per file,
     # then aggregate all hits. This mirrors how Step 3 handles directories.
@@ -452,10 +647,97 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # tsv_output and hits_tsv resolved at top of main() — reused here.
-    extracted_count = 0
+    # Extraction is buffered into memory (rather than streamed straight to
+    # disk, as in prior versions) so that Step 4's optional redundancy filter
+    # can compare every extracted sequence against every other one before
+    # anything is written. When --dedup-identity is not used, the buffer is
+    # written out unfiltered and in the same order as before — output is
+    # byte-identical to pre-v1.4.0 behavior.
+    extracted: list[PromoterRecord] = []
     found_loci: set[str] = set()  # tracks which loci were found across ALL files
 
+    try:
+        for ref_file in ref_files:
+            file_count = 0
+
+            for (
+                seq_id,
+                locus,
+                product,
+                seq,
+                actual_up,
+                strand,
+                genome_label,
+            ) in extract_by_loci(
+                ref_file,
+                target_loci,
+                args.upstream,
+                mode=args.mode,
+                warn_missing=False,  # suppressed: loci absent from one
+            ):  # genome are expected in multi-file runs
+
+                strand_symbol = "+" if strand == 1 else "-"
+                extracted.append(
+                    PromoterRecord(
+                        locus=locus,
+                        seq_id=seq_id,
+                        genome_label=genome_label,
+                        product=product,
+                        seq=seq,
+                        actual_up=actual_up,
+                        strand_symbol=strand_symbol,
+                    )
+                )
+                found_loci.add(locus)
+                file_count += 1
+
+            # Per-file summary — one clean line instead of one line per locus
+            status = f"{file_count} region(s) extracted" if file_count else "no matches"
+            print(f"      {ref_file.name:<45} {status}", file=sys.stderr)
+
+    except ValueError as e:
+        sys.exit(f"[!] Extraction error: {e}")
+
+    extracted_count = len(extracted)
+
+    # Consolidated missing-loci report — only loci never found in ANY file
+    never_found = sorted(set(target_loci) - found_loci)
+    if never_found:
+        print(
+            f"\n  [!] {len(never_found)} locus tag(s) not found in any reference file:",
+            file=sys.stderr,
+        )
+        for tag in never_found:
+            print(f"        - {tag}", file=sys.stderr)
+
+    # ── Step 4: Redundancy filter (optional) ─────────────────────────────────
+    dropped: list[tuple[PromoterRecord, str, float]] = []
+    if args.dedup_identity is not None:
+        print(
+            f"\n[Step 4] Checking {extracted_count} extracted sequence(s) for "
+            f">= {args.dedup_identity * 100:.0f}% DNA identity redundancy...",
+            file=sys.stderr,
+        )
+        kept, dropped = deduplicate_promoters(extracted, args.dedup_identity)
+        print(
+            f"    {len(kept)} kept, {len(dropped)} dropped as redundant.",
+            file=sys.stderr,
+        )
+        for rec, rep_locus, identity in dropped[:_MAX_DISPLAY]:
+            print(
+                f"      {rec.locus:<20} -> redundant with {rep_locus} "
+                f"({identity*100:.1f}% identity)",
+                file=sys.stderr,
+            )
+        if len(dropped) > _MAX_DISPLAY:
+            print(
+                f"      ... and {len(dropped) - _MAX_DISPLAY} more. "
+                f"See {redundancy_tsv.name} for the full list.",
+                file=sys.stderr,
+            )
+        extracted = kept
+
+    # ── Write outputs ─────────────────────────────────────────────────────────
     TSV_HEADER = "\t".join(
         [
             "locus_tag",
@@ -468,80 +750,41 @@ def main() -> None:
         ]
     )
 
-    try:
-        with (
-            open(output, "w", encoding="utf-8") as fasta_out,
-            open(tsv_output, "w", encoding="utf-8") as tsv_out,
-        ):
-            tsv_out.write(TSV_HEADER + "\n")
-
-            for ref_file in ref_files:
-                file_count = 0
-
-                for (
-                    seq_id,
-                    locus,
-                    product,
-                    seq,
-                    actual_up,
-                    strand,
-                    genome_label,
-                ) in extract_by_loci(
-                    ref_file,
-                    target_loci,
-                    args.upstream,
-                    mode=args.mode,
-                    warn_missing=False,  # suppressed: loci absent from one
-                ):  # genome are expected in multi-file runs
-
-                    strand_symbol = "+" if strand == 1 else "-"
-
-                    # FASTA — seq_id (contig) in header for traceability
-                    header = (
-                        f">{locus} | {seq_id} | {genome_label} | "
-                        f"{actual_up}bp upstream | strand {strand_symbol} | "
-                        f"{product[:45]}"
-                    )
-                    fasta_out.write(f"{header}\n{wrap_fasta(seq)}\n")
-
-                    # TSV — one row per extracted region
-                    tsv_out.write(
-                        "\t".join(
-                            [
-                                locus,
-                                genome_label,
-                                seq_id,
-                                product,
-                                strand_symbol,
-                                str(args.upstream),
-                                str(actual_up),
-                            ]
-                        )
-                        + "\n"
-                    )
-
-                    found_loci.add(locus)
-                    extracted_count += 1
-                    file_count += 1
-
-                # Per-file summary — one clean line instead of one line per locus
-                status = (
-                    f"{file_count} region(s) extracted" if file_count else "no matches"
+    with (
+        open(output, "w", encoding="utf-8") as fasta_out,
+        open(tsv_output, "w", encoding="utf-8") as tsv_out,
+    ):
+        tsv_out.write(TSV_HEADER + "\n")
+        for rec in extracted:
+            header = (
+                f">{rec.locus} | {rec.seq_id} | {rec.genome_label} | "
+                f"{rec.actual_up}bp upstream | strand {rec.strand_symbol} | "
+                f"{rec.product[:45]}"
+            )
+            fasta_out.write(f"{header}\n{wrap_fasta(rec.seq)}\n")
+            tsv_out.write(
+                "\t".join(
+                    [
+                        rec.locus,
+                        rec.genome_label,
+                        rec.seq_id,
+                        rec.product,
+                        rec.strand_symbol,
+                        str(args.upstream),
+                        str(rec.actual_up),
+                    ]
                 )
-                print(f"      {ref_file.name:<45} {status}", file=sys.stderr)
+                + "\n"
+            )
 
-    except ValueError as e:
-        sys.exit(f"[!] Extraction error: {e}")
-
-    # Consolidated missing-loci report — only loci never found in ANY file
-    never_found = sorted(set(target_loci) - found_loci)
-    if never_found:
-        print(
-            f"\n  [!] {len(never_found)} locus tag(s) not found in any reference file:",
-            file=sys.stderr,
+    if dropped:
+        REDUNDANCY_HEADER = "\t".join(
+            ["dropped_locus", "matched_representative_locus", "identity_pct"]
         )
-        for tag in never_found:
-            print(f"        - {tag}", file=sys.stderr)
+        with open(redundancy_tsv, "w", encoding="utf-8") as rf:
+            rf.write(REDUNDANCY_HEADER + "\n")
+            for rec, rep_locus, identity in dropped:
+                rf.write(f"{rec.locus}\t{rep_locus}\t{identity*100:.1f}\n")
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{'=' * 60}", file=sys.stderr)
@@ -550,9 +793,14 @@ def main() -> None:
     print(f"  Orthologs found    : {len(hits)}", file=sys.stderr)
     print(f"  Unique loci        : {len(target_loci)}", file=sys.stderr)
     print(f"  Regions extracted  : {extracted_count}", file=sys.stderr)
+    if args.dedup_identity is not None:
+        print(f"  Dropped (redundant): {len(dropped)}", file=sys.stderr)
+        print(f"  Written to output  : {len(extracted)}", file=sys.stderr)
     print(f"  FASTA written to   : {output.resolve()}", file=sys.stderr)
     print(f"  TSV written to     : {tsv_output.resolve()}", file=sys.stderr)
     print(f"  Hits TSV written   : {hits_tsv.resolve()}", file=sys.stderr)
+    if dropped:
+        print(f"  Redundancy TSV     : {redundancy_tsv.resolve()}", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
 
     if extracted_count == 0:
