@@ -104,7 +104,7 @@ RESUMING INTERRUPTED RUNS (--resume):
     Safe to combine with --range/--pick/--list: resume only affects which
     of the SELECTED sequences are skipped, not which ones are selected.
 
-SEQUENCE-TYPE CHECK:--resume
+SEQUENCE-TYPE CHECK:
     Before starting, a sample of the input is checked against the chosen
     -p program (protein vs nucleotide) using a cheap heuristic: amino acids
     E, F, I, L, P, Q, Z, J never appear in IUPAC nucleotide codes, so their
@@ -164,11 +164,21 @@ Example Usage:
     # the terminal preview to the first 20.
     $ python3 remote_blast.py -i eukaryote_proteome.faa --list
     $ python3 remote_blast.py -i eukaryote_proteome.faa --list -o seq_list.tsv
+
+v1.4.2 changes (bugfix): A sequence whose remote search was silently
+    rejected by NCBI server-side (e.g. CPU usage limit, overload,
+    maintenance) used to be indistinguishable from a genuine zero-hit
+    result — both produce empty stdout with returncode 0. That meant a
+    server-side failure got permanently recorded as "done" in .progress
+    and silently skipped on every future --resume, losing the sequence's
+    data with no further warning. _blast_one() now checks stderr for known
+    NCBI failure signatures whenever stdout is empty, and treats a match as
+    a retryable failure (returns None) rather than a completed result.
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 import argparse
 import contextlib
@@ -603,13 +613,15 @@ def _blast_one(
         debug:    If True, print command and all NCBI messages to stderr.
 
     Returns:
-        On a completed request (returncode 0): the BLAST output string,
-        which may be "" if the search genuinely found zero hits — this
-        counts as DEFINITIVELY DONE for --resume purposes.
-        On timeout or a non-zero returncode: None — this counts as NOT
-        done, so --resume will retry it on the next run. Callers must
-        check `is None`, not truthiness, to tell these apart (an empty
-        string and None are different outcomes here).
+        On a completed request (returncode 0) with a genuine result: the
+        BLAST output string, which may be "" if the search truly found
+        zero hits — this counts as DEFINITIVELY DONE for --resume purposes.
+        On timeout, a non-zero returncode, OR a detected silent server-side
+        failure (empty stdout + a known failure signature on stderr, e.g.
+        NCBI's CPU usage limit rejection): None — this counts as NOT done,
+        so --resume will retry it on the next run. Callers must check
+        `is None`, not truthiness, to tell these apart (an empty string and
+        None are different outcomes here).
     """
     tmp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False)
     tmp_path = tmp_file.name
@@ -688,6 +700,37 @@ def _blast_one(
                 file=sys.stderr,
             )
             return None
+
+        # Guard against a silent server-side failure masquerading as a
+        # genuine zero-hit result. BLAST+ -remote can complete the HTTP
+        # round trip and exit 0 even when NCBI rejected or aborted the
+        # search server-side (e.g. CPU usage limit hit, overload, scheduled
+        # maintenance) — the only trace left is a message on stderr; stdout
+        # is empty exactly like a real "no hits above threshold" result.
+        # Without this check, that data loss is permanent: it gets written
+        # to .progress as "done" and silently skipped on every future
+        # --resume. This list is a heuristic, not exhaustive — known NCBI
+        # failure signatures observed in the wild (e.g. "[blastsrv4.REAL]:
+        # Error: CPU usage limit was exceeded"). Use --debug to see the raw
+        # message if a sequence is being retried unexpectedly so the list
+        # can be extended.
+        if not result.stdout.strip() and result.stderr.strip():
+            lower_err = result.stderr.lower()
+            failure_signatures = (
+                "error",
+                "failed",
+                "timeout",
+                "timed out",
+                "cpu usage limit",
+            )
+            if any(sig in lower_err for sig in failure_signatures):
+                print(
+                    f"\n    [!] Treating this as a server-side failure, not "
+                    f"a genuine zero-hit result for {record.id} — will "
+                    f"retry on --resume rather than marking it done.",
+                    file=sys.stderr,
+                )
+                return None
 
         return result.stdout
 
