@@ -89,6 +89,17 @@ Note:
     functional or regulatory linkage — a distinction that mostly collapses
     in bacteria but not in eukaryotes.
 
+    v1.7.5 changes (bugfix): ``--context``'s anchor resolution used to pick
+    a single feature matching the anchor locus tag via a bare ``next()``
+    call. On a eukaryotic genome with alternatively-spliced isoforms
+    sharing one locus_tag (NCBI's own submission standard — see e.g. their
+    eukaryotic annotation guide), this could silently anchor the window on
+    a short truncated isoform instead of the full locus, shifting the
+    midpoint and incorrectly bypassing the >5000bp auto-scaling check even
+    when the true gene span exceeded it. Fixed: the anchor is now the full
+    genomic envelope (min start, max end) across every feature sharing the
+    locus tag, with a stderr note when more than one isoform contributed.
+
 Examples:
     Display the sequences contained in the file::
 
@@ -134,7 +145,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.7.4"
+__version__ = "1.7.5"
 
 
 import sys
@@ -1359,6 +1370,19 @@ def run_context_search(args) -> None:
     the default window doesn't even span the anchor gene itself. Passing
     ``--window`` explicitly always disables auto-scaling.
 
+    Anchor resolution uses the FULL genomic envelope of the locus tag
+    (min start, max end across every feature sharing it), not a single
+    arbitrarily-picked feature. Per NCBI's own submission guidelines, one
+    locus_tag is shared across every CDS/mRNA/exon belonging to one gene
+    — and on a eukaryotic genome, alternative splice isoforms of the same
+    gene routinely have different spans (alternate start/stop codons,
+    intron retention, exon skipping). Picking an arbitrary single isoform
+    (e.g. via a bare ``next()`` match) would silently anchor the window on
+    whichever isoform happens to appear first in the file, which can be a
+    short truncated variant — shifting the true midpoint and, worse,
+    suppressing the >5000bp auto-scaling check above if that short variant
+    alone doesn't clear the threshold even though the full locus does.
+
     Args:
         args: Parsed argument namespace. ``args.context`` must be set.
 
@@ -1370,15 +1394,30 @@ def run_context_search(args) -> None:
             continue
 
         all_features = collect_features(record)
-        anchor = next((f for f in all_features if f["locus"] == args.context), None)
-        if anchor is None:
+
+        # Full genomic envelope of the locus, not a single arbitrarily-
+        # picked isoform — see the docstring above for why this matters.
+        anchor_features = [f for f in all_features if f["locus"] == args.context]
+        if not anchor_features:
             continue
+
+        anchor_start = min(f["start"] for f in anchor_features)
+        anchor_end = max(f["end"] for f in anchor_features)
+
+        if len(anchor_features) > 1:
+            print(
+                f"[*] Anchor '{args.context}' resolved across "
+                f"{len(anchor_features)} feature(s) sharing this locus tag "
+                f"(e.g. splice isoforms) — using their combined span "
+                f"{anchor_start:,}\u2013{anchor_end:,} bp as the anchor.",
+                file=sys.stderr,
+            )
 
         user_set_window = args.window is not None
         window = args.window if user_set_window else DEFAULT_WINDOW
 
         if not user_set_window:
-            anchor_len = anchor["end"] - anchor["start"]
+            anchor_len = anchor_end - anchor_start
             if anchor_len > 5000:
                 scaled = anchor_len * 3
                 if scaled > window:
@@ -1392,7 +1431,7 @@ def run_context_search(args) -> None:
                     )
                     window = scaled
 
-        anchor_mid = (anchor["start"] + anchor["end"]) // 2
+        anchor_mid = (anchor_start + anchor_end) // 2
         win_c1 = max(1, anchor_mid - window)
         win_c2 = anchor_mid + window
 
@@ -1409,7 +1448,7 @@ def run_context_search(args) -> None:
         clipped = sum(1 for f in in_window if f["boundary"] != "full")
         print(
             f"\n[*] Context: '{args.context}' "
-            f"({anchor['start']:,}\u2013{anchor['end']:,} bp)  "
+            f"({anchor_start:,}\u2013{anchor_end:,} bp)  "
             f"window \u00b1{window:,} bp  "
             f"\u2192 {win_c1:,}\u2013{win_c2:,}\n"
             f"[*] {len(in_window)} feature(s) in window"
