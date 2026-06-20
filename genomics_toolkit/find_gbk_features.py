@@ -18,6 +18,19 @@ antiSMASH region boundaries (e.g. 53317-78823) are computed by antiSMASH and
 are not stored in the GBFF file. The ``--context`` mode provides a practical
 manual equivalent for defining those boundaries.
 
+CAVEAT — what "neighbourhood" means depends on the organism:
+    ``--context``/``--window`` answer "what else sits at these coordinates,"
+    not "what is functionally or regulatorily linked to this gene." In
+    bacteria those two questions often coincide (operons, biosynthetic gene
+    clusters are physically contiguous), so proximity is a reasonable proxy
+    for relatedness. In eukaryotes it frequently is not: genes can sit tens
+    or hundreds of kb apart with no relationship, or be separated by introns
+    and regulatory deserts that make raw bp distance a poor stand-in for
+    biological connection. Treat ``--context`` output as a coordinate-space
+    listing to inspect by eye, not as a claim that anything within the
+    window is co-regulated with, or functionally tied to, the anchor gene —
+    especially when reporting it in a manuscript.
+
 Typical workflow for an unfamiliar genome:
     1. ``--list-sequences``    Identify available contigs and locus tag ranges.
     2. ``--list-products``     Enumerate searchable functional categories.
@@ -65,6 +78,17 @@ Note:
     not passed explicitly, since the bacterial-tuned 10000 bp default can
     be smaller than the anchor gene itself on eukaryotic genomes.
 
+    v1.7.4 changes: (1) ``VALID_FEATURE_TYPES`` now also includes
+    miRNA/snoRNA/snRNA/scRNA/siRNA as defensive coverage for pre-2007-style
+    GenBank files that used these as literal feature keys before NCBI
+    unified them under the single ``ncRNA`` feature key + ``/ncRNA_class=``
+    qualifier — see ``_LEGACY_NCRNA_TYPES``. This is not expected to ever
+    fire on current NCBI RefSeq annotations, where ``/ncRNA_class=`` (already
+    handled) is the real mechanism; (2) documented a caveat that
+    ``--context``/``--window`` reflect coordinate proximity only, not
+    functional or regulatory linkage — a distinction that mostly collapses
+    in bacteria but not in eukaryotes.
+
 Examples:
     Display the sequences contained in the file::
 
@@ -110,7 +134,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.7.3"
+__version__ = "1.7.4"
 
 
 import sys
@@ -144,7 +168,30 @@ TERMINAL_DISPLAY_LIMIT = 20
 # GenBank files, share the same locus_tag and near-identical coordinates
 # as their child CDS/RNA feature — including them would double-count
 # every hit rather than add new information.
-VALID_FEATURE_TYPES = {"CDS", "tRNA", "rRNA", "tmRNA", "ncRNA", "misc_RNA"}
+#
+# A note on miRNA/snoRNA/snRNA/scRNA/siRNA/lncRNA specifically: per NCBI's
+# own GenBank Feature Table spec, these are NOT separate feature keys on a
+# modern, standards-compliant file. They only ever appear as VALUES of the
+# /ncRNA_class= qualifier on a feature whose .type is "ncRNA" — which this
+# set already covers, and get_annotation_text() already searches
+# /ncRNA_class= for keyword matching. Adding the bare strings below to
+# this set would be a no-op against current NCBI RefSeq annotations.
+#
+# The one place it's NOT a no-op: GenBank submitted before NCBI unified
+# these under the single "ncRNA" feature key (~2007) sometimes used these
+# as literal top-level feature keys directly. _LEGACY_NCRNA_TYPES exists
+# purely as defensive coverage for that pre-2007-style edge case — cheap
+# to keep, essentially never expected to fire on anything you're likely to
+# download today, and NOT the primary detection mechanism (ncRNA_class is).
+_LEGACY_NCRNA_TYPES = {"miRNA", "snoRNA", "snRNA", "scRNA", "siRNA"}
+VALID_FEATURE_TYPES = {
+    "CDS",
+    "tRNA",
+    "rRNA",
+    "tmRNA",
+    "ncRNA",
+    "misc_RNA",
+} | _LEGACY_NCRNA_TYPES
 RNA_FEATURE_TYPES = VALID_FEATURE_TYPES - {"CDS"}
 
 # Default --context neighbourhood half-width in bp, used only when the user
@@ -255,7 +302,10 @@ def get_args() -> argparse.Namespace:
         help=(
             "Show all genes within --window bp of the given locus tag. "
             "The no-antiSMASH way to define cluster boundaries. "
-            "Combine with --seq on multi-record files."
+            "Combine with --seq on multi-record files. "
+            "Note: shows coordinate proximity, not functional linkage — "
+            "treat with caution on eukaryotic genomes, where nearby genes "
+            "are often unrelated."
         ),
     )
     search.add_argument(
@@ -1280,6 +1330,14 @@ def run_context_search(args) -> None:
 
     Without ``-o``, prints a neighbourhood table to the terminal. With ``-o``,
     writes a TSV with an ``Is_Anchor`` column plus standard feature columns.
+
+    CAVEAT: this answers "what else sits at these coordinates," not "what
+    is functionally/regulatorily linked to the anchor." That distinction
+    mostly disappears in bacteria (operons, BGCs are physically contiguous)
+    but does NOT transfer to eukaryotes, where physical proximity often has
+    no functional meaning. Don't treat the output as a co-regulation or
+    functional-linkage claim on its own — see the module docstring's CAVEAT
+    section for the full rationale.
 
     By default (overlap-inclusive), a feature is included if it touches the
     window at all — even partially — and is tagged with a ``boundary``
