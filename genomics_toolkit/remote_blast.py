@@ -104,7 +104,7 @@ RESUMING INTERRUPTED RUNS (--resume):
     Safe to combine with --range/--pick/--list: resume only affects which
     of the SELECTED sequences are skipped, not which ones are selected.
 
-SEQUENCE-TYPE CHECK:
+SEQUENCE-TYPE CHECK:--resume
     Before starting, a sample of the input is checked against the chosen
     -p program (protein vs nucleotide) using a cheap heuristic: amino acids
     E, F, I, L, P, Q, Z, J never appear in IUPAC nucleotide codes, so their
