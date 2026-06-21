@@ -10,6 +10,28 @@ This tool locates a target gene by its locus tag, calculates the strand
 orientation to extract the correct upstream sequence (applying reverse
 complementation where necessary), and scans the region for specific motif hits.
 
+PROKARYOTE-ONLY ANCHOR — NOT A WINDOW-SIZE PROBLEM:
+    This script anchors the upstream window on the CDS start (the
+    translation start / ATG) of whichever feature utils.py resolves for
+    the given locus tag — not on the Transcription Start Site (TSS). In
+    prokaryotes these coincide, since there is no 5' UTR separating them.
+    In eukaryotes they do not: the TSS sits upstream of the CDS start,
+    often separated by a 5' UTR that itself contains introns.
+
+    Increasing --upstream on a eukaryotic genome does NOT fix this — it
+    just extracts a longer stretch of 5' UTR/intron sequence anchored at
+    the wrong coordinate, not the actual promoter. This script previously
+    suggested "--upstream 2000 or higher" for eukaryotic use with no such
+    caveat; that guidance was incomplete and has been corrected as of
+    v1.2.1 (see changelog below). There is no eukaryote mode here, the
+    same way there is none in the sibling script regulon_scanner.py,
+    which uses the identical CDS-anchored mechanism and already documents
+    this limitation. For eukaryotic promoter/regulatory work, extract
+    upstream regions with universal_promoter_extractor.py or
+    target_promoter_pipeline.py instead (both TSS-anchored, resolving the
+    TSS from mRNA features across isoforms), then search that output with
+    MEME/FIMO directly.
+
 Note:
     Associated with ongoing, unpublished research (manuscript in
     preparation). Correct attribution is requested when used in
@@ -36,13 +58,34 @@ Note:
     script would have raised "Locus tag not found" before ever reaching
     the label lookup, regardless of this function's own fix.
 
-Example:
-    python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta
+    v1.2.1: Corrected misleading eukaryotic guidance, found while
+    auditing this script against its sibling regulon_scanner.py. Both
+    scripts ultimately anchor their upstream window on a CDS-start
+    coordinate (this script via utils.extract_upstream_sequence(), which
+    delegates to utils.extract_upstream_sequence_with_length()'s CDS-first
+    feature resolution) — but regulon_scanner.py already documented
+    itself as PROKARYOTE-ONLY for exactly that reason, while this
+    script's own --upstream help text read "For eukaryotes, consider
+    --upstream 2000 or higher," implying a bigger window alone makes the
+    result eukaryote-correct. It does not: CDS start and the TSS are
+    different coordinates in eukaryotes, separated by a 5' UTR (itself
+    possibly containing introns), and no amount of extra upstream bp
+    recovers the correct anchor point. Added the PROKARYOTE-ONLY ANCHOR
+    docstring section above (mirroring regulon_scanner.py's wording,
+    since it is the same root cause), corrected the --upstream help text,
+    and added a one-time runtime warning — via the new shared
+    utils.looks_eukaryotic() heuristic (mRNA-feature detection) — printed
+    before extraction proceeds, pointing to universal_promoter_extractor.py
+    / target_promoter_pipeline.py for actual eukaryotic TSS-anchored
+    extraction. No change to prokaryote behavior or output format.
+
+Example Usage:
+    $ python3 gbk_promoter_finder.py -i C5_genome.gbk -l ctg1_50 -u 150 -m "TATAAT" -o ctg1_50_promoter.fasta
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import re
 import sys
@@ -63,6 +106,7 @@ from utils import (
     wrap_fasta,
     extract_upstream_sequence,
     translate_iupac_to_regex,
+    looks_eukaryotic,
 )
 
 
@@ -212,8 +256,12 @@ def main() -> None:
         type=int,
         default=100,
         help=(
-            "Upstream bases to extract. Default: 100. "
-            "For eukaryotes, consider --upstream 2000 or higher."
+            "Upstream bases to extract. Default: 100. NOTE: this script "
+            "anchors on CDS start, not the transcription start site (TSS) "
+            "— increasing this value does NOT adapt it for eukaryotic use "
+            "(see the PROKARYOTE-ONLY ANCHOR note in this script's "
+            "docstring). Use universal_promoter_extractor.py for "
+            "eukaryotic, TSS-anchored upstream extraction."
         ),
     )
     parser.add_argument(
@@ -227,6 +275,26 @@ def main() -> None:
     try:
         if args.upstream < 1:
             raise ValueError("Upstream bases must be a positive integer.")
+
+        # One-time heuristic warning: mRNA features are a strong signal of
+        # eukaryotic annotation (Prokka/Bakta prokaryote output never emits
+        # them). This script is CDS-anchored, not TSS-anchored (see the
+        # PROKARYOTE-ONLY ANCHOR docstring section) — regulon_scanner.py
+        # already warns on this exact signal; utils.looks_eukaryotic() is
+        # the shared helper extracted so both scripts (and any future one)
+        # stay consistent without duplicating the scan logic.
+        if looks_eukaryotic(args.input):
+            print(
+                "[!] Warning: mRNA features detected — this looks like a "
+                "eukaryotic genome. This script anchors the upstream "
+                "window on CDS start, not the transcription start site "
+                "(TSS), so the true promoter will likely be missed. See "
+                "the PROKARYOTE-ONLY ANCHOR note in this script's "
+                "docstring. For eukaryotic promoter extraction, use "
+                "universal_promoter_extractor.py or "
+                "target_promoter_pipeline.py instead.",
+                file=sys.stderr,
+            )
 
         upstream_seq, start, end, strand = extract_upstream_sequence(
             args.input, args.locus, args.upstream
