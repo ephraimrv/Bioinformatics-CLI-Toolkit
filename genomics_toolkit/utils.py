@@ -74,11 +74,31 @@ Note:
     prokaryote behavior (where no locus_tag has more than one CDS) fully
     silent and unchanged, while making the eukaryotic multi-isoform case
     loud instead of silently wrong.
+
+    v1.4.2: Added ``looks_eukaryotic()``. Found while auditing
+    gbk_promoter_finder.py and comparative_kmer_analyzer.py against
+    regulon_scanner.py: all three ultimately anchor their upstream window
+    on whatever feature this module's CDS-first resolution picks (CDS
+    start, i.e. the translation start / ATG) — never the transcription
+    start site (TSS). regulon_scanner.py already documents itself as
+    PROKARYOTE-ONLY for exactly this reason and emits a one-time runtime
+    warning when it detects mRNA features mid-scan (a strong eukaryotic
+    signal — Prokka/Bakta prokaryote output never emits mRNA features).
+    The other two scripts shared the identical underlying anchor problem
+    but neither documented nor warned about it; gbk_promoter_finder.py's
+    own --upstream help text even read "For eukaryotes, consider
+    --upstream 2000 or higher," implying a bigger window alone fixes it,
+    which it does not. Rather than duplicate the mRNA-detection scan in
+    both files, it's extracted here once and now used by both (see their
+    own changelogs for what changed on their end). regulon_scanner.py's
+    own inline check is left as-is: it's folded into a scan it already
+    performs for other reasons, so calling this separately there would
+    add a redundant full-genome pass for no benefit.
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 import argparse
 import contextlib
@@ -426,6 +446,45 @@ def extract_upstream_sequence(
         gbk_path, locus_tag, upstream_bp
     )
     return seq, start, end, strand
+
+
+def looks_eukaryotic(gbk_path: Path) -> bool:
+    """Cheap heuristic check for eukaryotic content: any mRNA feature present.
+
+    Used by CDS-anchored upstream-extraction tools (gbk_promoter_finder.py,
+    comparative_kmer_analyzer.py) to emit a one-time warning that their
+    upstream window is anchored on CDS start, not the TSS, before the user
+    silently gets a "promoter" that is actually 5' UTR/intron sequence
+    anchored at the wrong coordinate. See those scripts' PROKARYOTE-ONLY
+    ANCHOR docstring sections, and regulon_scanner.py, which performs the
+    equivalent check inline during a single-pass genome scan it already
+    does for other reasons.
+
+    This is a heuristic, not a guarantee: presence of an mRNA feature is a
+    strong signal of eukaryotic annotation (Prokka/Bakta prokaryote output
+    does not emit mRNA features), but its ABSENCE does not prove a genome
+    is prokaryotic — it only means this particular signal wasn't found.
+    Stops at the first mRNA feature found rather than scanning the entire
+    file, since one occurrence is sufficient to warrant the warning.
+
+    Args:
+        gbk_path: Path to the GenBank file.
+
+    Returns:
+        True if any mRNA feature is found in any record; False otherwise,
+        including on any parse error — this check is advisory-only, so a
+        failed heuristic should never block real extraction work, which
+        will raise its own clear error separately if the file is actually
+        unreadable.
+    """
+    try:
+        for record in SeqIO.parse(gbk_path, "genbank"):
+            for feature in record.features:
+                if feature.type == "mRNA":
+                    return True
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    return False
 
 
 def stream_reference_files(target_path: Path) -> Iterator[Path]:
