@@ -70,7 +70,7 @@ Note:
     behavior are unchanged; only the internal slicing math moved.
 
     v1.6.0: Fixed a critical data-loss bug, mirroring the one just fixed
-    in gbk_ortholog_finder.py. Every locus_tag extraction site in this
+    in pairwise_homolog_finder.py. Every locus_tag extraction site in this
     file previously defaulted features lacking ``/locus_tag`` to the
     literal string ``"UNKNOWN"``. On a file where ``/locus_tag`` is
     absent entirely (common for eukaryotic assemblies, GFF3-to-GenBank
@@ -82,7 +82,7 @@ Note:
     extraction sites (both branches of ``extract_regulatory_regions()``
     and ``extract_by_loci()``) now use ``_resolve_identifier()`` — the
     same locus_tag -> protein_id -> gene -> coordinate fallback hierarchy
-    as ``gbk_ortholog_finder.py``, using an identical coordinate-fallback
+    as ``pairwise_homolog_finder.py``, using an identical coordinate-fallback
     string format so the two scripts always agree on an ID for the same
     feature (critical for ``target_promoter_pipeline.py``, which passes
     IDs from one script's output into the other's ``extract_by_loci()``
@@ -249,16 +249,16 @@ def _extract_upstream_seq(
 def _resolve_identifier(feature, record_id: str) -> str:
     """Resolves a unique grouping key for a feature, with safe fallbacks.
 
-    Mirrors ``gbk_ortholog_finder._resolve_identifier()`` exactly — same
+    Mirrors ``pairwise_homolog_finder._resolve_identifier()`` exactly — same
     fallback order, same coordinate-fallback string format — so that the
     two scripts always agree on an identifier for the same feature. This
     matters specifically for ``extract_by_loci()``, the bridge function
     ``target_promoter_pipeline.py`` uses to look up loci that
-    ``gbk_ortholog_finder.py`` already found: if the two scripts computed
+    ``pairwise_homolog_finder.py`` already found: if the two scripts computed
     fallback IDs differently, a homolog found under one script's ID would
     never be found by the other's lookup.
 
-    Previously this script (like gbk_ortholog_finder.py before its own
+    Previously this script (like pairwise_homolog_finder.py before its own
     fix) defaulted every feature lacking ``/locus_tag`` to the literal
     string ``"UNKNOWN"``. On a file where ``/locus_tag`` is absent
     entirely, every such feature collided on that one key — confirmed
@@ -545,7 +545,7 @@ def extract_by_loci(
     The programmatic counterpart to ``extract_regulatory_regions``. While
     ``extract_regulatory_regions`` discovers targets by keyword, this function
     extracts targets whose locus tags are already known — making it the correct
-    tool for bridge scripts that receive locus tags from ``gbk_ortholog_finder``.
+    tool for bridge scripts that receive locus tags from ``pairwise_homolog_finder``.
 
     Supports both prokaryotic and eukaryotic GenBank files via the ``mode``
     parameter. When ``mode="auto"`` (default), organism type is detected
@@ -675,7 +675,7 @@ def extract_by_loci(
                     # would be computed from different coordinates (UTRs) and
                     # would never string-match this one. This is the exact
                     # mechanism that lets this function find a locus that
-                    # gbk_ortholog_finder.py resolved via its own coordinate
+                    # pairwise_homolog_finder.py resolved via its own coordinate
                     # fallback — see _find_overlapping_fallback_id()'s docstring.
                     cds_products: dict[str, str] = {}
                     fallback_cds_spans: dict[str, tuple[int, int]] = {}
