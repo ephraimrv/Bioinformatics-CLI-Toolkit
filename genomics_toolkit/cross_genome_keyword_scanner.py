@@ -46,10 +46,37 @@ FILE KEY SAFETY:
     being merged into the same tracking entry, which would produce silently
     wrong conservation counts.
 
+EUKARYOTIC COMPATIBILITY:
+    This script relies entirely on the /product, /gene, /note, and
+    /translation qualifiers already present on each CDS feature, as
+    annotated by the upstream tool — it never re-derives a sequence from
+    genomic coordinates, so it is already safe for multi-exon eukaryotic
+    CDS features out of the box. "Total physical copies" (Tier 2 sort,
+    above) now correctly counts distinct locus_tags rather than raw CDS
+    feature count, so eukaryotic splice isoforms sharing one locus_tag no
+    longer inflate that statistic — see the v1.3.0 changelog below.
+
 Note:
     Associated with ongoing, unpublished research (manuscript in
     preparation). Correct attribution is requested when used in
     derivative works.
+
+    v1.3.0: Fixed one bug found while auditing this script against its
+    sibling, conserved_annotation_scanner.py, which had already fixed
+    the identical issue independently (v1.3.0 there). The Tier-2 sort
+    key ("Total physical copies") summed raw CDS hit count per genome
+    rather than distinct locus_tag count. Eukaryotic GenBank annotations
+    represent alternative splice isoforms as separate CDS features
+    sharing one locus_tag — confirmed empirically that a gene with 3
+    annotated isoforms all matching a keyword in one genome, plus one
+    normal single-copy match in a second genome, reported "4 total
+    physical copies" when both genomes actually have exactly 1 physical
+    locus each. Fixed by counting distinct locus_tags per genome, then
+    summing across genomes. No effect on prokaryotic genomes, where every
+    locus_tag already maps to exactly one CDS feature (distinct-count ==
+    raw-count always). Does not affect the TSV/FASTA output rows
+    themselves, which remain complete (every hit is still written, with
+    its locus_tag visible) — only the report's sort order was biased.
 
 Examples:
     # Standard run: Search for 'bacteriocin', output TSV
@@ -64,7 +91,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import sys
 import argparse
@@ -313,11 +340,24 @@ def main() -> None:
         #   Tier 1: genome count          DESCENDING (most conserved at top)
         #   Tier 2: total physical copies DESCENDING (single-copy before multicopy)
         #   Tier 3: alphabetical keyword  ASCENDING
+        #
+        # Tier 2 counts DISTINCT locus_tags per genome (v1.3.0), not raw CDS
+        # hit count. Eukaryotic GenBank annotations represent alternative
+        # splice isoforms as separate CDS features sharing one locus_tag —
+        # without this, a gene with 3 isoforms all matching the keyword in
+        # one genome would inflate "total physical copies" as if it were 3
+        # separate gene copies, when it is one physical locus. No effect on
+        # prokaryotic genomes, where every locus_tag already maps to exactly
+        # one CDS feature. See conserved_annotation_scanner.py v1.3.0, where
+        # this same bug was found and fixed first.
         sorted_results = sorted(
             valid_results.items(),
             key=lambda item: (
                 -len(item[1]),
-                -sum(len(hits) for hits in item[1].values()),
+                -sum(
+                    len({hit["locus_tag"] for hit in hits})
+                    for hits in item[1].values()
+                ),
                 item[0].lower(),
             ),
         )
