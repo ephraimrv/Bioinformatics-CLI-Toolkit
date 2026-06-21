@@ -1,14 +1,28 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Jan Ephraim R. Vallente
-
-"""Conserved Annotation Scanner
+"""
+Conserved Annotation Scanner
 
 Extracts and groups CDS product annotations across GenBank genomes to identify
 conserved genes. Acts as a text-based core proteome profiler: aggregates all
 /product qualifiers, normalizes them, and reports only gene products that meet
 a specified genome frequency threshold. Filters uninformative 'hypothetical
 protein' annotations by default.
+
+EUKARYOTIC COMPATIBILITY:
+    This script relies entirely on the /product and /translation qualifiers
+    already present on each CDS feature, as annotated by the upstream tool
+    (Prokka, Bakta, NCBI RefSeq, RAST) — it never re-derives a sequence from
+    genomic coordinates the way contig_gene_profiler.py does. This means it
+    is already safe for multi-exon eukaryotic CDS features out of the box:
+    /translation is the correctly spliced protein regardless of how many
+    exons the underlying CDS has, since the annotation tool computed it, not
+    this script.
+
+    The one eukaryotic-specific issue that DID exist — isoforms inflating
+    the Tier-2 "physical copies" sort statistic — is fixed as of v1.3.0;
+    see the changelog below.
 
 ANNOTATION NORMALIZATION:
     Raw /product strings are normalized before grouping using
@@ -35,6 +49,9 @@ OUTPUT SORT ORDER (most to least conserved):
     12 copies in one genome ranks BELOW a perfectly distributed single-copy
     universal gene with the same genome count).
 
+    "Physical copies" (Tier 2) counts DISTINCT locus_tags per genome, not
+    raw CDS feature count — see v1.3.0 changelog below for why.
+
 PSEUDOGENE HANDLING:
     CDS features without a /translation qualifier (pseudogenes, frameshifted
     genes) are stored with an empty string rather than None. The TSV
@@ -48,12 +65,58 @@ FILE KEY SAFETY:
     subdirectories (e.g., wild_type/genome.gbk and mutant/genome.gbk) from
     being merged into the same tracking entry.
 
-Note:
-    Associated with ongoing, unpublished research (manuscript in
-    preparation). Correct attribution is requested when used in
-    derivative works.
+License: MIT
 
-Examples:
+Note:
+    This module is part of ongoing research and is associated with an upcoming
+    publication. Please cite appropriately when used in derivative works.
+    See LICENSE file in the repository root for full license terms.
+
+    v1.3.0: Fixed two bugs and one stale reference found during review.
+    (1) ``_normalize_product()`` could reduce a raw /product string to an
+    empty string — confirmed empirically that "Putative", "(hypothetical)",
+    and "predicted" (three different, unrelated raw annotations) ALL
+    normalize to "". Without a fallback, every such low-information
+    annotation across every genome in a scan would silently merge into one
+    fake "conserved gene group" under the shared empty key, regardless of
+    how unrelated the underlying genes actually were. This also broke the
+    existing hypothetical-protein filter for phrasings like
+    "(hypothetical)": "hypothetical" is not a substring of "", so the
+    filter (which checks the NORMALIZED key) never caught it, letting an
+    uninformative annotation leak into the output as if it were a real
+    conserved gene. Fixed by falling back to the lowercased-but-otherwise-
+    unmodified original product string whenever normalization yields "" —
+    this preserves enough of the original text to avoid the
+    cross-contamination, and keeps "hypothetical" as a substring so the
+    existing filter still works on this fallback value too.
+    (2) The Tier-2 sort key summed raw CDS feature count
+    (``len(hits)``) per genome as "physical copies" — confirmed empirically
+    that a eukaryotic gene with 3 annotated splice isoforms sharing one
+    locus_tag in one genome, plus one normal single-copy ortholog in a
+    second genome, reported "4 total physical copies" when both genomes
+    actually have exactly 1 physical locus each (isoforms are alternative
+    transcripts of the SAME locus, not separate gene copies). This did not
+    corrupt the TSV output rows (every hit is still written, with its
+    locus_tag visible) or the Tier-1 genome count, only the Tier-2 sort
+    statistic and therefore the report's ranking. Fixed by counting
+    DISTINCT locus_tags per genome (``len({hit["locus_tag"] for hit in
+    hits})``) rather than raw hit count. No effect on prokaryotic genomes,
+    where every locus_tag already maps to exactly one CDS feature, so
+    distinct-count and raw-count are always identical. Edge case: multiple
+    genuinely unannotated CDS features (no /locus_tag at all, stored under
+    the literal fallback string "UNKNOWN") within the same genome and
+    product group will now collapse to a sort-count of 1 rather than their
+    true count — a deliberate tradeoff, since this is rarer than the
+    eukaryotic isoform case and does not reduce TSV output completeness
+    (every such hit is still written as its own row).
+    (3) Corrected a stale reference: this docstring referenced
+    "gbk_ortholog_finder.py" twice for sequence-based clustering, a name
+    that has never existed in this project's file list. Confirmed
+    pairwise_homolog_finder.py is the renamed target (its own docstring
+    independently describes itself as the Smith-Waterman/BLOSUM62
+    sequence-based clustering tool). Corrected both references.
+
+Example Usage:
     # Standard run: Find genes conserved in at least 2 genomes, output TSV
     $ python3 conserved_annotation_scanner.py -i references/ --min_genomes 2 -o core.tsv
 
@@ -66,7 +129,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import re
 import sys
@@ -119,6 +182,20 @@ def _normalize_product(product: str) -> str:
     - Removing trailing bracketed organism specs (e.g., "[Lactobacillus sp.]")
     - Removing trailing parenthetical details (e.g., "(plasmid)")
 
+    EMPTY-STRING FALLBACK (v1.3.0):
+        The steps above can reduce some raw /product strings to nothing at
+        all — confirmed empirically that "Putative", "(hypothetical)", and
+        "predicted" all normalize to "". Returning "" directly would merge
+        every such low-information annotation, across every genome scanned,
+        into one shared (and meaningless) group key — regardless of how
+        unrelated the actual underlying genes are. It would also silently
+        defeat the caller's "hypothetical protein" filter for phrasings
+        like "(hypothetical)", since "hypothetical" is not a substring of
+        "". When normalization would yield "", this function instead
+        returns the lowercased-but-otherwise-unmodified original string,
+        which both avoids the cross-contamination and keeps "hypothetical"
+        (or any other identifying text) intact for that filter to act on.
+
     Limitation: Cannot resolve abbreviation-vs-full-name discrepancies
     (e.g., "atpA" vs "ATP synthase subunit alpha"). These require
     sequence-based clustering. See pairwise_homolog_finder.py.
@@ -127,9 +204,12 @@ def _normalize_product(product: str) -> str:
         product: Raw /product qualifier string from a GenBank CDS feature.
 
     Returns:
-        Normalized, lowercase string suitable for grouping.
+        Normalized, lowercase string suitable for grouping. Falls back to
+        the lowercased raw string if normalization would otherwise yield
+        an empty string.
     """
-    name = product.lower().strip()
+    raw_lower = product.lower().strip()
+    name = raw_lower
     # Remove trailing bracketed organism specs
     name = re.sub(r"\s*\[.*?\]\s*$", "", name)
     # Remove trailing parenthetical specs
@@ -140,7 +220,10 @@ def _normalize_product(product: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     # Strip noise qualifier words
     words = [w for w in name.split() if w not in _NOISE_WORDS]
-    return " ".join(words).strip()
+    normalized = " ".join(words).strip()
+
+    # See EMPTY-STRING FALLBACK note above.
+    return normalized if normalized else raw_lower
 
 
 # ── GenBank parsing ────────────────────────────────────────────────────────────
@@ -332,11 +415,23 @@ def main() -> None:
         #   Tier 3: alphabetical          ASCENDING
         # Negating Tiers 1 and 2 achieves descending order without reverse=True,
         # while keeping Tier 3 in natural ascending order.
+        #
+        # Tier 2 counts DISTINCT locus_tags per genome (v1.3.0), not raw CDS
+        # feature count. Eukaryotic GenBank annotations represent alternative
+        # splice isoforms as separate CDS features sharing one locus_tag —
+        # confirmed empirically that a gene with 3 isoforms in one genome plus
+        # 1 normal ortholog in another previously reported "4 total physical
+        # copies" when both genomes actually have exactly 1 physical locus
+        # each. Counting distinct locus_tags collapses isoforms of the same
+        # locus back down to 1 per genome. No effect on prokaryotic genomes,
+        # where every locus_tag already maps to exactly one CDS feature
+        # (distinct-count == raw-count always). See the module changelog for
+        # the "UNKNOWN" locus_tag edge-case tradeoff this introduces.
         sorted_results = sorted(
             filtered_results.items(),
             key=lambda item: (
                 -len(item[1]),
-                -sum(len(hits) for hits in item[1].values()),
+                -sum(len({hit["locus_tag"] for hit in hits}) for hits in item[1].values()),
                 item[0],
             ),
         )
