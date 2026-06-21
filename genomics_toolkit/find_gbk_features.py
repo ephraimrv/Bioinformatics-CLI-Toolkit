@@ -44,8 +44,8 @@ sorted by keyword order in the TSV file.
 
 The ``--search-type`` flag controls where ``-q`` searches:
     - ``product`` (default): searches /product=, /ncRNA_class=, /gene_kind=,
-      /gene_functions=, /sec_met_domain=, and /note= — use this when you know
-      what a gene *does*.
+      /gene_functions=, /sec_met_domain=, /note=, /GO_function=, and
+      /GO_process= — use this when you know what a gene *does*.
     - ``locus``: substring match on /locus_tag= — use this when you know part
       of a locus tag, e.g. ``-q "RHP56_RS003"`` to find all genes in that range.
     - ``locus-exact``: exact match on /locus_tag= — use this to look up one
@@ -100,6 +100,38 @@ Note:
     genomic envelope (min start, max end) across every feature sharing the
     locus tag, with a stderr note when more than one isoform contributed.
 
+    v1.7.6 changes: ``get_annotation_text()`` (the text ``-q`` searches
+    against) never included ``/GO_function=``/``/GO_process=``, even
+    though ``feature_to_dict()`` has always extracted both for verbose
+    (``-v``) display. A feature annotated with, say, GO_function
+    "GO:0004672 - protein kinase activity" but a generic /product like
+    "hypothetical protein" was invisible to ``-q "kinase"`` even though
+    the GO data was already being read from the file on every call. Both
+    qualifiers are now included (joined with a space first, since each is
+    a list — matching how /gene_functions= and /sec_met_domain= are
+    already handled). This is a targeted fix for the GO data already
+    being extracted, not general ontology-aware search: there is still no
+    ID-based or term-hierarchy matching (e.g. recognizing a child GO term
+    implies a parent term) — every match here remains plain substring
+    search, just now reaching two fields it previously missed.
+
+    v1.8.0 changes: (1) Added ``--whole-word`` and ``--regex`` (mutually
+    exclusive) as alternatives to the default substring match for ``-q``.
+    Substring matching alone means a short query like "kin" matches
+    "kinase", "kinetochore", and "cytokinesis" indiscriminately —
+    ``--whole-word`` requires a full word boundary; ``--regex`` lets the
+    query be a real pattern (e.g. ``"kinase$"``, ``"(kinase|phosphatase)"``).
+    Regex patterns are validated upfront in ``validate_args()`` so a typo'd
+    pattern exits immediately instead of failing partway through a large
+    genome scan. Default behavior (neither flag) is completely unchanged.
+    (2) Added ``--list-isoforms LOCUS_TAG``: shows every feature sharing
+    one locus tag side by side (coordinates, length, protein_id, product),
+    plus their combined genomic envelope. A deliberately lightweight
+    alternative to full gene/transcript modeling — see the module CAVEAT
+    section and this changelog's own discussion elsewhere on why a real
+    Gene-hierarchy object is out of scope for this file specifically (it
+    belongs in a separate, dedicated tool if ever built).
+
 Examples:
     Display the sequences contained in the file::
 
@@ -116,6 +148,15 @@ Examples:
         python3 find_gbk_features.py -i genome.gbff -q "bacteriocin" --seq NZ_CP134351.1
         python3 find_gbk_features.py -i genome.gbff -q "bacteriocin" "transporter" "regulator"
         python3 find_gbk_features.py -i genome.gbff -q "bacteriocin" "transporter" -o hits.tsv
+
+    Search with whole-word or regex matching (avoid substring over-matching)::
+
+        python3 find_gbk_features.py -i genome.gbff -q "kin" --whole-word
+        python3 find_gbk_features.py -i genome.gbff -q "kinase$" --regex
+
+    Compare isoforms sharing one locus tag::
+
+        python3 find_gbk_features.py -i genome.gbff --list-isoforms RHP56_RS00345
 
     Search by locus tag::
 
@@ -145,10 +186,11 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.7.5"
+__version__ = "1.8.0"
 
 
 import sys
+import re
 import argparse
 from collections import Counter
 from pathlib import Path
@@ -289,7 +331,8 @@ def get_args() -> argparse.Namespace:
         help=(
             "One or more case-insensitive search terms. "
             "Matched against /product=, /ncRNA_class=, /gene_kind=, "
-            "/gene_functions=, /sec_met_domain=, and /note=. "
+            "/gene_functions=, /sec_met_domain=, /note=, /GO_function=, "
+            "and /GO_process=. "
             'Enclose multi-word terms in quotes: -q "ABC transporter" "response regulator". '
             "For locus tag searches use --search-type locus or locus-exact."
         ),
@@ -303,6 +346,44 @@ def get_args() -> argparse.Namespace:
             "'product' searches annotation text qualifiers (default). "
             "'locus' does a substring match on /locus_tag=. "
             "'locus-exact' matches a single /locus_tag= exactly."
+        ),
+    )
+    search.add_argument(
+        "--whole-word",
+        action="store_true",
+        help=(
+            "For -q: match whole words only, not substrings. Without this, "
+            "'-q kin' matches 'kinase', 'kinetochore', and 'cytokinesis' "
+            "since all contain the literal characters 'kin'. With "
+            "--whole-word, only an exact word boundary match counts. "
+            "Mutually exclusive with --regex. Has no effect with "
+            "--search-type locus-exact (which always matches exactly)."
+        ),
+    )
+    search.add_argument(
+        "--regex",
+        action="store_true",
+        help=(
+            "For -q: treat each query as a case-insensitive regular "
+            "expression instead of a literal substring. E.g. "
+            "-q 'kinase$' matches only at the end of a word; "
+            "-q '(kinase|phosphatase)' matches either. Validated upfront — "
+            "an invalid pattern exits immediately rather than failing "
+            "partway through a large genome. Mutually exclusive with "
+            "--whole-word. Has no effect with --search-type locus-exact."
+        ),
+    )
+    search.add_argument(
+        "--list-isoforms",
+        type=str,
+        default=None,
+        metavar="LOCUS_TAG",
+        help=(
+            "Show every feature sharing this locus tag side by side "
+            "(e.g. alternative splice isoforms) — coordinates, length, "
+            "protein_id, and product for each. A lightweight way to see "
+            "isoform-level differences without a full gene/transcript "
+            "model. Combine with --seq on multi-record files."
         ),
     )
     search.add_argument(
@@ -415,8 +496,9 @@ def validate_args(args: argparse.Namespace) -> None:
     has_context = args.context is not None
     has_coord = args.c1 is not None or args.c2 is not None
     has_seq = args.seq is not None
+    has_isoforms = args.list_isoforms is not None
 
-    if not any([has_query, has_context, has_coord, has_seq]):
+    if not any([has_query, has_context, has_coord, has_seq, has_isoforms]):
         sys.exit(
             "\n[!] Error: specify a mode. Start here if the genome is unfamiliar:\n"
             "    --list-sequences             what sequences are in this file\n"
@@ -426,6 +508,7 @@ def validate_args(args: argparse.Namespace) -> None:
             "    -q 'keyword' [keyword2 ...]  keyword search (one or more terms)\n"
             "    --context LOCUS_TAG          neighbourhood explorer\n"
             "    --c1 START --c2 END          coordinate range\n"
+            "    --list-isoforms LOCUS_TAG    compare isoforms sharing one locus tag\n"
         )
 
     if has_coord:
@@ -447,6 +530,29 @@ def validate_args(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
 
+    if args.regex and args.whole_word:
+        sys.exit("\n[!] Error: --regex and --whole-word cannot be used together.\n")
+
+    if (args.regex or args.whole_word) and not has_query:
+        print(
+            "[i] --regex/--whole-word have no effect without -q; ignoring.\n",
+            file=sys.stderr,
+        )
+
+    if (args.regex or args.whole_word) and args.search_type == "locus-exact":
+        print(
+            "[i] --regex/--whole-word have no effect with --search-type "
+            "locus-exact (which always matches exactly); ignoring.\n",
+            file=sys.stderr,
+        )
+
+    if args.regex and has_query:
+        for q in args.query:
+            try:
+                re.compile(q, re.IGNORECASE)
+            except re.error as e:
+                sys.exit(f"\n[!] Invalid --regex pattern {q!r}: {e}\n")
+
 
 # ── Feature helpers ───────────────────────────────────────────────────────────
 
@@ -455,10 +561,28 @@ def get_annotation_text(feature) -> str:
     """Builds a single searchable string from all annotation qualifiers.
 
     Checks /product=, /ncRNA_class=, /gene_kind=, /gene_functions=,
-    /sec_met_domain=, and /note=, covering NCBI GBFF protein-coding genes
-    (/product=), NCBI non-coding RNA genes (/ncRNA_class=, e.g. "miRNA",
-    "snoRNA", "lncRNA"), and antiSMASH region GBK (/gene_kind=,
-    /gene_functions=) in a single call.
+    /sec_met_domain=, /note=, /GO_function=, and /GO_process=, covering
+    NCBI GBFF protein-coding genes (/product=), NCBI non-coding RNA genes
+    (/ncRNA_class=, e.g. "miRNA", "snoRNA", "lncRNA"), antiSMASH region
+    GBK (/gene_kind=, /gene_functions=), and GO term annotations
+    (/GO_function=, /GO_process=) in a single call.
+
+    GO TERMS (v1.7.6): ``feature_to_dict()`` has always extracted
+    ``GO_function``/``GO_process`` for verbose (``-v``) display, but this
+    function — the one ``-q`` actually searches against — never included
+    them. That meant a feature annotated with, say, GO_function
+    "GO:0004672 - protein kinase activity" but a generic /product like
+    "hypothetical protein" was invisible to ``-q "kinase"`` even though
+    the GO data was already being read from the file. Both qualifiers are
+    lists (a feature can carry more than one GO term per category), so
+    each is joined with a space first, matching how /gene_functions= and
+    /sec_met_domain= (also lists) are already handled below.
+
+    This is a targeted fix for the specific GO terms already being
+    extracted, not general ontology-aware search — there's no ID-based or
+    term-hierarchy matching here (e.g. recognizing that a child GO term
+    implies a parent term), just the same plain substring search as
+    every other field, now reaching two fields it previously missed.
 
     Args:
         feature: A BioPython ``SeqFeature`` object.
@@ -473,8 +597,58 @@ def get_annotation_text(feature) -> str:
         " ".join(feature.qualifiers.get("gene_functions", [])),
         " ".join(feature.qualifiers.get("sec_met_domain", [])),
         feature.qualifiers.get("note", [""])[0],
+        " ".join(feature.qualifiers.get("GO_function", [])),
+        " ".join(feature.qualifiers.get("GO_process", [])),
     ]
     return " ".join(p for p in parts if p).lower()
+
+
+def _query_matches(query: str, text: str, use_regex: bool, whole_word: bool) -> bool:
+    """Checks whether a query matches a piece of searchable text.
+
+    Three mutually exclusive modes (enforced in ``validate_args()``, so at
+    most one of ``use_regex``/``whole_word`` is ever True here):
+      - Default (both False): case-insensitive substring match, the
+        original v1.7.x behavior. ``-q kin`` matches "kinase",
+        "kinetochore", "cytokinesis" — anywhere the literal characters
+        appear.
+      - ``whole_word=True``: matches only when the query appears as a
+        complete word (regex ``\\b`` boundaries around the literal,
+        escaped query, case-insensitive). ``-q kin`` no longer matches
+        "kinase".
+      - ``use_regex=True``: the query itself is compiled as a
+        case-insensitive regular expression and searched for, instead of
+        being treated as a literal string. ``-q "kinase$"`` matches only
+        at the end of a word; ``-q "(kinase|phosphatase)"`` matches
+        either. ``validate_args()`` already pre-compiles every query
+        once upfront to fail fast on a bad pattern before scanning any
+        features — the try/except here is a defensive second check, not
+        the primary validation path.
+
+    Args:
+        query:      The raw query string as given to ``-q``.
+        text:       The text to search (any case — casing is handled
+                    internally for every mode, so callers don't need to
+                    pre-lowercase).
+        use_regex:  Treat ``query`` as a regex pattern.
+        whole_word: Match ``query`` as a whole word only.
+
+    Returns:
+        True if query matches text under the selected mode.
+
+    Raises:
+        ValueError: If ``use_regex`` is True and query is not a valid
+            regex pattern.
+    """
+    if use_regex:
+        try:
+            return re.search(query, text, re.IGNORECASE) is not None
+        except re.error as e:
+            raise ValueError(f"Invalid regex pattern {query!r}: {e}") from e
+    if whole_word:
+        pattern = r"\b" + re.escape(query) + r"\b"
+        return re.search(pattern, text, re.IGNORECASE) is not None
+    return query.lower() in text.lower()
 
 
 def get_display_product(feature) -> str:
@@ -1506,8 +1680,15 @@ def run_keyword_search(args) -> None:
     ``Keyword`` column with rows sorted by keyword order.
 
     Annotation text search (``--search-type product``) checks /product=,
-    /ncRNA_class=, /gene_kind=, /gene_functions=, /sec_met_domain=, and
-    /note=. Locus searches check only /locus_tag=.
+    /ncRNA_class=, /gene_kind=, /gene_functions=, /sec_met_domain=,
+    /note=, /GO_function=, and /GO_process=. Locus searches check only
+    /locus_tag=.
+
+    Matching mode is controlled by ``--regex``/``--whole-word`` (mutually
+    exclusive, validated in ``validate_args()``): default is
+    case-insensitive substring match; ``--whole-word`` requires a full
+    word boundary; ``--regex`` treats the query as a regular expression.
+    See ``_query_matches()``.
 
     Args:
         args: Parsed argument namespace. ``args.query`` must be set.
@@ -1532,9 +1713,14 @@ def run_keyword_search(args) -> None:
 
             for query in queries:
                 if args.search_type == "product":
-                    matched = query.lower() in get_annotation_text(feature)
+                    matched = _query_matches(
+                        query,
+                        get_annotation_text(feature),
+                        args.regex,
+                        args.whole_word,
+                    )
                 elif args.search_type == "locus":
-                    matched = query.lower() in locus.lower()
+                    matched = _query_matches(query, locus, args.regex, args.whole_word)
                 else:  # locus-exact
                     matched = query.lower() == locus.lower()
 
@@ -1693,6 +1879,89 @@ def run_coordinate_search(args) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
+def run_list_isoforms(args) -> None:
+    """Shows every feature sharing one locus tag side by side.
+
+    A lightweight alternative to full gene-hierarchy modeling: rather than
+    representing a gene with its child transcripts as first-class objects
+    (a separate, larger undertaking — deliberately out of scope for this
+    file), this simply lists every feature that shares one locus_tag, so
+    isoform-level differences (coordinates, length, protein product) are
+    visible without needing a dedicated transcript-relationship tool.
+
+    Unlike ``--context``'s anchor resolution (which collapses every
+    same-locus feature into a single combined envelope, by design, since
+    it only needs ONE anchor span), this mode deliberately keeps every
+    isoform separate so they can be compared — that's the entire point.
+
+    Without ``-o``, prints a table to the terminal — no
+    ``TERMINAL_DISPLAY_LIMIT`` cap, since by definition this is about ONE
+    locus tag and the result set is always small. With ``-o``, writes a
+    TSV (same base/verbose columns as other modes).
+
+    Args:
+        args: Parsed argument namespace. ``args.list_isoforms`` must be set.
+
+    Raises:
+        SystemExit: If the locus tag is not found.
+    """
+    for record in SeqIO.parse(args.input, "genbank"):
+        if args.seq and record.id != args.seq:
+            continue
+
+        all_features = collect_features(record)
+        matches = [f for f in all_features if f["locus"] == args.list_isoforms]
+        if not matches:
+            continue
+
+        matches.sort(key=lambda f: f["start"])
+
+        if args.output:
+            tsv_rows = [
+                _build_feature_tsv_row(f, verbose=args.verbose) for f in matches
+            ]
+            _write_tsv(tsv_rows, args.output)
+            print(
+                f"[*] {len(matches)} feature(s) sharing locus tag "
+                f"'{args.list_isoforms}' written to '{args.output}'.\n",
+                file=sys.stderr,
+            )
+        else:
+            single = len(matches) == 1
+            print(
+                f"\n[*] {len(matches)} feature(s) sharing locus tag "
+                f"'{args.list_isoforms}' on '{record.id}'"
+                + (" (no isoform variation):\n" if single else ":\n"),
+                file=sys.stderr,
+            )
+            for i, f in enumerate(matches, 1):
+                length_bp = f["end"] - f["start"] + 1
+                sys.stdout.write(
+                    f"Isoform {i}:\n"
+                    f"  Protein ID : {f['protein_id'] or '(none)'}\n"
+                    f"  Position   : {f['start']:,}\u2013{f['end']:,} bp "
+                    f"({length_bp:,} bp, {f['strand']} strand)\n"
+                    f"  Length     : {f['aa_length']} aa\n"
+                    f"  Product    : {f['product']}\n\n"
+                )
+            if not single:
+                envelope_start = min(f["start"] for f in matches)
+                envelope_end = max(f["end"] for f in matches)
+                sys.stdout.write(
+                    f"  Combined genomic envelope: {envelope_start:,}"
+                    f"\u2013{envelope_end:,} bp "
+                    f"(this is what --context uses as its anchor span)\n\n"
+                )
+        return
+
+    sys.exit(
+        f"\n[!] Locus tag '{args.list_isoforms}' not found"
+        + (f" in sequence '{args.seq}'" if args.seq else "")
+        + ".\n    Use --list-sequences to verify IDs, or\n"
+        + "    -q with --search-type locus-exact to check the tag exists.\n"
+    )
+
+
 def main() -> None:
     """Parses arguments and dispatches to the appropriate mode runner.
 
@@ -1711,6 +1980,10 @@ def main() -> None:
 
     if args.list_products:
         run_list_products(args)
+        return
+
+    if args.list_isoforms:
+        run_list_isoforms(args)
         return
 
     if args.context:
