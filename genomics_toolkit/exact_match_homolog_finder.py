@@ -17,8 +17,8 @@ to prevent duplicate sequence outputs.
 Important:
     This tool uses EXACT substring matching. A single amino acid substitution
     in the core region will cause a miss. For divergent homolog detection at
-    lower identity (e.g., ≥35%%), use gbk_ortholog_finder.py (Smith-Waterman
-    alignment with BLOSUM62 scoring) instead.
+    lower identity (e.g., ≥35%%), use pairwise_homolog_finder.py
+    (Smith-Waterman alignment with BLOSUM62 scoring) instead.
 
     Use --raw to skip bacteriocin-specific core trimming and search using
     the full provided sequence. Required for non-bacteriocin targets.
@@ -41,21 +41,33 @@ Note:
     preparation). Correct attribution is requested when used in derivative
     works.
 
+    v1.2.1: Corrected two stale references found while auditing
+    conserved_annotation_scanner.py for an identical issue. (1) The
+    "Important" section pointed to "gbk_ortholog_finder.py" for divergent
+    homolog detection — a filename that has never existed in this
+    project. Confirmed pairwise_homolog_finder.py is the renamed target
+    (its own docstring independently describes itself as the
+    Smith-Waterman/BLOSUM62 sequence-based clustering tool). (2) This
+    file's own Example section instructed users to run
+    "exact_match_ortholog_finder.py" — the deprecated predecessor this
+    file superseded — instead of its own actual filename,
+    exact_match_homolog_finder.py. No behavior change; documentation only.
+
 Example:
     Default bacteriocin-core search::
 
-        python3 exact_match_ortholog_finder.py \\
+        python3 exact_match_homolog_finder.py \\
             -t target.faa -r references/ -o extracted_homologs.faa
 
     Non-bacteriocin proteins (housekeeping genes, TFs, kinases, etc.)::
 
-        python3 exact_match_ortholog_finder.py \\
+        python3 exact_match_homolog_finder.py \\
             -t target.faa -r references/ --raw -o extracted_homologs.faa
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import sys
 import argparse
