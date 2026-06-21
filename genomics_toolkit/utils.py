@@ -94,11 +94,23 @@ Note:
     own inline check is left as-is: it's folded into a scan it already
     performs for other reasons, so calling this separately there would
     add a redundant full-genome pass for no benefit.
+
+    v1.4.3: Added ".mpfa" to ``stream_reference_files()``'s recognized
+    extensions. Found while auditing protein_presence_scanner.py and
+    exact_match_homolog_finder.py: both explicitly document ".mpfa" as a
+    supported protein-FASTA reference format and both rely on this
+    function for directory-mode scanning (``-i references_dir/``) — but
+    neither the single-file check nor the directory glob loop here ever
+    included ".mpfa", so a reference file with that extension was
+    silently never even handed to either script's own per-file logic.
+    Purely additive: every previously-recognized extension is unchanged,
+    so no existing caller's behavior is affected for any file that isn't
+    ".mpfa".
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 
 import argparse
 import contextlib
@@ -489,7 +501,7 @@ def looks_eukaryotic(gbk_path: Path) -> bool:
 
 def stream_reference_files(target_path: Path) -> Iterator[Path]:
     """Yields valid GenBank or FASTA files from a file or directory."""
-    valid_exts = (".gbk", ".gbff", ".fasta", ".fa", ".faa")
+    valid_exts = (".gbk", ".gbff", ".fasta", ".fa", ".faa", ".mpfa")
 
     if target_path.is_file():
         if target_path.suffix.lower() in valid_exts:
@@ -501,7 +513,7 @@ def stream_reference_files(target_path: Path) -> Iterator[Path]:
             )
 
     elif target_path.is_dir():
-        for ext in ("*.gbk", "*.gbff", "*.fasta", "*.fa", "*.faa"):
+        for ext in ("*.gbk", "*.gbff", "*.fasta", "*.fa", "*.faa", "*.mpfa"):
             yield from target_path.rglob(ext)
 
     else:
