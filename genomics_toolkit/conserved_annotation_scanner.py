@@ -110,11 +110,10 @@ Note:
     eukaryotic isoform case and does not reduce TSV output completeness
     (every such hit is still written as its own row).
     (3) Corrected a stale reference: this docstring referenced
-    "gbk_ortholog_finder.py" twice for sequence-based clustering, a name
-    that has never existed in this project's file list. Confirmed
-    pairwise_homolog_finder.py is the renamed target (its own docstring
-    independently describes itself as the Smith-Waterman/BLOSUM62
-    sequence-based clustering tool). Corrected both references.
+    "gbk_ortholog_finder.py" twice for sequence-based clustering — this
+    was the script's former name before it was renamed to
+    pairwise_homolog_finder.py, a more appropriate name for what it does.
+    The rename was never propagated to these two references. Corrected both.
 
 Example Usage:
     # Standard run: Find genes conserved in at least 2 genomes, output TSV
@@ -431,7 +430,9 @@ def main() -> None:
             filtered_results.items(),
             key=lambda item: (
                 -len(item[1]),
-                -sum(len({hit["locus_tag"] for hit in hits}) for hits in item[1].values()),
+                -sum(
+                    len({hit["locus_tag"] for hit in hits}) for hits in item[1].values()
+                ),
                 item[0],
             ),
         )

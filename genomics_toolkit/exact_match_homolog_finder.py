@@ -46,14 +46,13 @@ Note:
     v1.2.1: Corrected two stale references found while auditing
     conserved_annotation_scanner.py for an identical issue. (1) The
     "Important" section pointed to "gbk_ortholog_finder.py" for divergent
-    homolog detection — a filename that has never existed in this
-    project. Confirmed pairwise_homolog_finder.py is the renamed target
-    (its own docstring independently describes itself as the
-    Smith-Waterman/BLOSUM62 sequence-based clustering tool). (2) This
-    file's own Example section instructed users to run
-    "exact_match_ortholog_finder.py" — the deprecated predecessor this
-    file superseded — instead of its own actual filename,
-    exact_match_homolog_finder.py. No behavior change; documentation only.
+    homolog detection — this was that tool's former name before it was
+    renamed to pairwise_homolog_finder.py; the rename
+    was never propagated to this reference. (2) This file's own Example
+    section instructed users to run "exact_match_ortholog_finder.py" —
+    the deprecated predecessor this file superseded — instead of its own
+    actual filename, exact_match_homolog_finder.py. No behavior change;
+    documentation only.
 
     v1.3.0: BREAKING CHANGE — found while reasoning through whether this
     script's sibling, pairwise_homolog_finder.py, implies this one is
