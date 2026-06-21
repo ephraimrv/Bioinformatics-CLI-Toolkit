@@ -53,6 +53,36 @@ ENRICHMENT METRIC — LOG2 FOLD CHANGE (L2FC):
     Terminal output sorts by |L2FC| to surface the most biologically
     distinct k-mers. CPK values are retained in the TSV for reference.
 
+PROKARYOTE-ONLY ANCHOR — NOT A WINDOW-SIZE PROBLEM:
+    Both the target and regulator upstream windows are extracted via
+    utils.extract_upstream_sequence_with_length(), which anchors on CDS
+    start (the translation start / ATG) — not on the Transcription Start
+    Site (TSS). In prokaryotes these coincide, since there is no 5' UTR
+    separating them. In eukaryotes they do not: the TSS sits upstream of
+    the CDS start, often separated by a 5' UTR that itself contains
+    introns.
+
+    Increasing --u_target/--u_regulator on a eukaryotic genome does NOT
+    fix this — it just extracts a longer stretch of 5' UTR/intron
+    sequence anchored at the wrong coordinate for BOTH genes being
+    compared, not the actual promoter/enhancer region. An earlier version
+    of this docstring's Examples section showed a "eukaryotic enhancer
+    analysis" run against real yeast locus tags with large windows, with
+    no such caveat — that example has been removed as of v1.3.1 (see
+    changelog below) because it implied this script already supports
+    eukaryotic use, which it does not. This script's k-mer/L2FC math
+    itself (canonicalization, CPK normalization, Haldane-Anscombe
+    correction) is fully organism-agnostic and needs no eukaryotic
+    rework — only the upstream-extraction step it depends on is
+    currently prokaryote-only. There is no eukaryote mode here, the same
+    way there is none in the sibling script regulon_scanner.py, which
+    uses the identical CDS-anchored mechanism and already documents this
+    limitation. A future version could accept pre-extracted FASTA
+    sequences directly (e.g. TSS-anchored output from
+    universal_promoter_extractor.py) instead of locus-tag lookup, letting
+    the k-mer/L2FC logic run unchanged on eukaryotic input — not yet
+    implemented.
+
 Note:
     Associated with ongoing, unpublished research (manuscript in
     preparation). Correct attribution is requested when used in
@@ -78,6 +108,24 @@ Note:
     could be compared under the assumption they were both the requested
     length.
 
+    v1.3.1: Corrected misleading eukaryotic guidance, found while
+    auditing this script against its sibling regulon_scanner.py. Both
+    scripts ultimately anchor on a CDS-start coordinate via utils.py's
+    CDS-first feature resolution — but regulon_scanner.py already
+    documented itself as PROKARYOTE-ONLY for exactly that reason, while
+    this script's own Examples section demonstrated a "eukaryotic
+    enhancer analysis" against real yeast locus tags as if it were a
+    supported use case, with no caveat at all. Removed that example,
+    added the PROKARYOTE-ONLY ANCHOR docstring section above (mirroring
+    regulon_scanner.py's wording, since it is the same root cause), and
+    added a one-time runtime warning — via the new shared
+    utils.looks_eukaryotic() heuristic (mRNA-feature detection), checked
+    once before either gene's extraction — pointing to
+    universal_promoter_extractor.py / target_promoter_pipeline.py for
+    actual eukaryotic TSS-anchored extraction. No change to the k-mer
+    counting, L2FC, or CPK logic, and no change to prokaryote behavior or
+    output format.
+
 Examples:
     # Basic run: Compare two genes with default k=6, show top 20 k-mers
     $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 -o analysis.tsv
@@ -90,21 +138,23 @@ Examples:
 
     # Terminal output: Show top 10 k-mers sorted by |L2FC| (no file)
     $ python3 comparative_kmer_analyzer.py -i genome.gbk -t ctg1_50 -r ctg1_74 --top 10
-
-    # All custom: Eukaryotic enhancer analysis with 7-mers, large upstream windows
-    $ python3 comparative_kmer_analyzer.py -i yeast_genome.gbff -t YAL001C -r YAL003W -k 7 --u_target 2000 --u_regulator 3000 --top 15 -o enhancer_analysis.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import math
 import sys
 import argparse
 
 from collections import Counter
-from utils import base_parser, extract_upstream_sequence_with_length, revcomp
+from utils import (
+    base_parser,
+    extract_upstream_sequence_with_length,
+    revcomp,
+    looks_eukaryotic,
+)
 
 
 # ── Canonical k-mer helpers ───────────────────────────────────────────────────
@@ -237,10 +287,24 @@ def get_args() -> argparse.Namespace:
         "-r", "--regulator", required=True, help="Locus tag for regulator"
     )
     parser.add_argument(
-        "--u_target", type=int, default=150, help="Upstream bp for target"
+        "--u_target",
+        type=int,
+        default=150,
+        help=(
+            "Upstream bp for target. Default: 150. NOTE: extraction is "
+            "CDS-anchored, not TSS-anchored — increasing this value does "
+            "NOT adapt this script for eukaryotic use (see the "
+            "PROKARYOTE-ONLY ANCHOR note in this script's docstring)."
+        ),
     )
     parser.add_argument(
-        "--u_regulator", type=int, default=300, help="Upstream bp for regulator"
+        "--u_regulator",
+        type=int,
+        default=300,
+        help=(
+            "Upstream bp for regulator. Default: 300. Same CDS-anchored "
+            "caveat as --u_target applies."
+        ),
     )
     parser.add_argument("-k", "--kmer", type=int, default=6, help="K-mer length")
     parser.add_argument("--top", type=int, default=20, help="Top N k-mers to report")
@@ -260,6 +324,26 @@ def main() -> None:
     output_path = args.output
 
     try:
+        # One-time heuristic warning: mRNA features are a strong signal of
+        # eukaryotic annotation (Prokka/Bakta prokaryote output never emits
+        # them). Both extraction calls below are CDS-anchored, not
+        # TSS-anchored (see the PROKARYOTE-ONLY ANCHOR docstring section)
+        # — checked once here rather than once per gene, since both genes
+        # come from the same input file.
+        if looks_eukaryotic(args.input):
+            print(
+                "[!] Warning: mRNA features detected — this looks like a "
+                "eukaryotic genome. Both the target and regulator upstream "
+                "windows are anchored on CDS start, not the transcription "
+                "start site (TSS), so the true promoter/enhancer region "
+                "for either gene will likely be missed. See the "
+                "PROKARYOTE-ONLY ANCHOR note in this script's docstring. "
+                "For eukaryotic regulatory analysis, extract upstream "
+                "regions with universal_promoter_extractor.py or "
+                "target_promoter_pipeline.py instead.",
+                file=sys.stderr,
+            )
+
         # Extract sequences. Using the *_with_length variant so we can
         # detect and warn about contig-boundary truncation — otherwise a
         # gene sitting near the edge of its contig would silently return
