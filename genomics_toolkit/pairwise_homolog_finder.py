@@ -114,7 +114,7 @@ Note:
 Example:
     Bacteriocin screen with signal peptide trimming and domain-centric search::
 
-        python3 gbk_ortholog_finder.py \\
+        python3 pairwise_homolog_finder.py \\
             -q region001.gbk -r references/ \\
             --mature --coverage-mode min --max-length 150 \\
             --identity 0.35 --min-coverage 0.65 \\
@@ -122,14 +122,14 @@ Example:
 
     Whole-protein homolog search across genomes::
 
-        python3 gbk_ortholog_finder.py \\
+        python3 pairwise_homolog_finder.py \\
             -q genome.gbff -r references/ \\
             --coverage-mode max --identity 0.40 --min-coverage 0.75 \\
             -o homolog_hits.tsv
 
     Region vs single reference (default mode)::
 
-        python3 gbk_ortholog_finder.py \\
+        python3 pairwise_homolog_finder.py \\
             -q region001.gbk -r ATCC8293.gbff -o results.tsv
 """
 
@@ -1195,7 +1195,7 @@ def write_log_file(
     import shlex
 
     cmd_parts = [
-        "python3 gbk_ortholog_finder.py",
+        "python3 pairwise_homolog_finder.py",
         f"-q {shlex.quote(str(args.query))}",
         f"-r {shlex.quote(str(args.reference))}",
         f"--identity {args.identity}",
