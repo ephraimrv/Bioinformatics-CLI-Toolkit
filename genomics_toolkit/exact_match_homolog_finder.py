@@ -20,8 +20,10 @@ Important:
     lower identity (e.g., ≥35%%), use pairwise_homolog_finder.py
     (Smith-Waterman alignment with BLOSUM62 scoring) instead.
 
-    Use --raw to skip bacteriocin-specific core trimming and search using
-    the full provided sequence. Required for non-bacteriocin targets.
+    You must choose explicitly between --raw (search full sequences as
+    provided) and --mature (apply bacterial Sec/Tat/RiPP double-glycine
+    leader-cleavage trimming first) — there is no default. See the v1.3.0
+    changelog below for why.
 
     Reference files must be protein sequences (GenBank with /translation
     qualifiers, or protein FASTA: .faa/.mpfa). Nucleotide FASTA files
@@ -53,13 +55,42 @@ Note:
     file superseded — instead of its own actual filename,
     exact_match_homolog_finder.py. No behavior change; documentation only.
 
+    v1.3.0: BREAKING CHANGE — found while reasoning through whether this
+    script's sibling, pairwise_homolog_finder.py, implies this one is
+    eukaryote-incompatible (it doesn't, structurally, but the two scripts'
+    defaults diverged in a way that mattered). pairwise_homolog_finder.py
+    defaults to NOT applying calculate_mature_core() (its --mature flag
+    is opt-in); this script defaulted to APPLYING it unless --raw was
+    explicitly passed — the riskier direction, since calculate_mature_core()
+    models bacterial Sec/Tat/RiPP double-glycine cleavage specifically.
+    The danger is narrower than "every eukaryotic target breaks": most
+    eukaryotic proteins contain no "GG" dipeptide acting as a meaningful
+    signal, so the function is a no-op for them even without --raw. The
+    real failure mode is a non-bacteriocin protein that happens to
+    contain a COINCIDENTAL "GG" substring (not rare in a 200+ residue
+    protein) — in that case the function silently chops the sequence at
+    that coincidental site and runs bacterial-specific hydrophobicity-
+    window logic on the remainder, producing a biologically meaningless
+    fragment with no indication anything went wrong. There is no
+    reliable way to detect "is this protein bacterial" from a bare FASTA
+    target (no organism metadata), so rather than pick a new default in
+    either direction (which only swaps which silent-failure mode is
+    possible), --raw and --mature are now a REQUIRED mutually exclusive
+    pair — running this script without explicitly choosing one now
+    raises an argparse error instead of silently assuming either
+    behavior. Any existing call site that previously relied on the
+    implicit default (running with neither flag) must add one
+    explicitly; there is no backward-compatible default to fall back on
+    by design.
+
 Example:
-    Default bacteriocin-core search::
+    Bacteriocin/RiPP core search (explicit, no longer the default)::
 
         python3 exact_match_homolog_finder.py \\
-            -t target.faa -r references/ -o extracted_homologs.faa
+            -t target.faa -r references/ --mature -o extracted_homologs.faa
 
-    Non-bacteriocin proteins (housekeeping genes, TFs, kinases, etc.)::
+    Non-bacteriocin proteins (housekeeping genes, TFs, kinases, eukaryotic
+    proteins in general)::
 
         python3 exact_match_homolog_finder.py \\
             -t target.faa -r references/ --raw -o extracted_homologs.faa
@@ -67,7 +98,7 @@ Example:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 import sys
 import argparse
@@ -109,13 +140,33 @@ def get_args() -> argparse.Namespace:
         default=None,
         help="Optional: Output FASTA file path (Default: prints to terminal)",
     )
-    parser.add_argument(
+    core_group = parser.add_mutually_exclusive_group(required=True)
+    core_group.add_argument(
         "--raw",
         action="store_true",
         help=(
-            "Skip calculate_mature_core() and use the full sequences exactly as provided. "
-            "Required for non-bacteriocin targets (transcription factors, housekeeping genes, "
-            "eukaryotic proteins, etc.) that don't use double-glycine cleavage logic."
+            "Skip calculate_mature_core() and use the full sequences exactly "
+            "as provided. Required for non-bacteriocin targets — "
+            "transcription factors, housekeeping genes, kinases, and "
+            "eukaryotic proteins in general — since none of these use the "
+            "bacterial double-glycine leader-cleavage logic this trimmer "
+            "models."
+        ),
+    )
+    core_group.add_argument(
+        "--mature",
+        action="store_true",
+        help=(
+            "Apply calculate_mature_core() before searching: trims each "
+            "target to its predicted mature core using bacterial "
+            "Sec/Tat/RiPP double-glycine cleavage rules. Use this ONLY for "
+            "bacteriocin/RiPP-type targets. This does NOT model eukaryotic "
+            "secretory-pathway signal peptides (ER/Golgi-targeted), which "
+            "use entirely different cleavage motifs — there is no reliable "
+            "way to auto-detect this from a bare sequence (it carries no "
+            "organism metadata), so the choice between --raw and --mature "
+            "is mandatory rather than defaulted, to avoid silently applying "
+            "bacterial-specific trimming to a non-bacterial target."
         ),
     )
     return parser.parse_args()
@@ -142,7 +193,9 @@ def load_target_peptides(fasta_path: Path, use_raw: bool = False) -> dict[str, s
         )
     else:
         print(
-            "[*] Mode: bacteriocin core trimming (use --raw to disable)",
+            "[*] Mode: --mature (bacterial Sec/Tat/RiPP double-glycine "
+            "cleavage rules; NOT valid for eukaryotic secretory-pathway "
+            "targets)",
             file=sys.stderr,
         )
 
