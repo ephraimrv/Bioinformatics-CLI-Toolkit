@@ -47,12 +47,70 @@ KEYWORD SEARCH IN EUKARYOTE MODE:
 ALTERNATIVE SPLICING (ISOFORM HANDLING):
     In eukaryotes, a single locus_tag can have multiple mRNA features
     representing alternative splice variants. Each isoform may have a
-    different Transcription Start Site (TSS). The script resolves this by
-    finding the 5'-most TSS across all isoforms of a locus:
+    different Transcription Start Site (TSS). By default, the script
+    resolves this by finding the 5'-most TSS across all isoforms of a
+    locus:
         Forward strand (+): 5'-most TSS = smallest mRNA start coordinate.
         Reverse strand (-): 5'-most TSS = largest mRNA end coordinate.
     When multiple isoforms are detected, a [Multi-isoform] message is printed
     to stderr showing how many isoforms were found and which TSS was used.
+
+    CAVEAT: the 5'-most TSS is a conservative, deterministic choice — not
+    necessarily the biologically dominant one. A rare, minimally-expressed
+    transcript variant with an unusually far-upstream TSS would be chosen
+    over a well-supported, highly-expressed canonical isoform with a
+    closer-in TSS, since this script has no expression data and most
+    GenBank files carry no "canonical transcript" annotation to prefer
+    instead. Pass ``--all-isoforms`` (v1.7.0) to extract a separate
+    upstream region per isoform instead of merging them — see that flag's
+    help text below.
+
+CAVEAT — applies to every mode of this script, not fixable in code:
+    (1) DETECTION HEURISTIC: ``--mode auto`` calls a file eukaryotic if and
+        only if an ``mRNA`` feature key appears before ``ORIGIN``. This is
+        reliable for standard NCBI/Ensembl/Augustus output, but is not a
+        universal biological test — a GFF-to-GenBank conversion, a
+        partial/ncRNA-focused annotation, or a custom pipeline could
+        produce a genuinely eukaryotic file with no ``mRNA`` feature at
+        all, which this heuristic would misclassify as prokaryotic. Pass
+        ``--mode eukaryote`` explicitly if you know the organism and
+        auto-detection seems wrong.
+    (2) TSS ACCURACY: an mRNA feature's start coordinate is only as
+        reliable as the annotation that produced it. For NCBI RefSeq
+        entries built from cap-trapped/CAGE-seq transcript evidence, this
+        is a genuine experimentally-supported TSS. For computational gene
+        predictions (Augustus, MAKER, and many draft eukaryotic
+        annotations), "mRNA start" usually means "transcript MODEL start"
+        — the predictor's best guess, not a direct experimental
+        measurement. This script cannot tell which kind of annotation it
+        has; treat extracted "promoters" from predicted annotations as a
+        best-available approximation, not a confirmed TSS, especially
+        before reporting them in a manuscript.
+    (3) PROMOTER LENGTH IS NOT ONE-SIZE-FITS-ALL: ``--upstream N`` extracts
+        a fixed window for every gene. In bacteria and fungi this is
+        usually a reasonable approximation (operons/promoters are
+        physically compact). In plants and animals it frequently is not:
+        a real regulatory element can sit hundreds of bp to tens of kb
+        from the TSS, and no single ``--upstream`` value is correct for
+        every gene in such a genome. There is no universal promoter
+        length to default to — this is a biological reality, not a
+        parameter this script can tune around. See the equivalent CAVEAT
+        in find_gbk_features.py's ``--context`` documentation for the
+        same underlying point applied to coordinate-proximity search.
+
+ALL-ISOFORMS MODE (v1.7.0):
+    Pass ``--all-isoforms`` to extract one upstream region PER ISOFORM
+    instead of merging all isoforms of a locus into a single 5'-most-TSS
+    region (the default — see the CAVEAT above for why that default isn't
+    always biologically representative). Each isoform gets a disambiguated
+    identifier: ``{locus_tag}#{transcript_id}`` when the mRNA feature
+    carries a ``/transcript_id`` qualifier, else ``{locus_tag}#isoform{N}``.
+    This mirrors ``pairwise_homolog_finder.py``'s ``--keep-all-isoforms``
+    flag and identifier format exactly, for consistency across the
+    toolkit. Off by default — existing output is completely unchanged
+    unless you opt in. Increases output size proportionally to isoform
+    count; fine for a handful of isoforms per locus, more verbose at
+    whole-genome scale with many alternatively-spliced genes.
 
 Note:
     Associated with ongoing, unpublished research (manuscript in
@@ -103,6 +161,32 @@ Note:
     Genes with real locus_tag/protein_id/gene annotations are unaffected;
     they still match directly as before.
 
+    v1.7.0: Two additions found during review, neither changing default
+    behavior unless explicitly requested.
+    (1) Added CAVEAT documentation (module docstring) covering four
+    pre-existing, non-code limitations that review confirmed were real
+    but undocumented: the mRNA-presence eukaryote-detection heuristic
+    isn't universal (GFF-to-GenBank conversions, ncRNA-only annotations
+    could be eukaryotic with no mRNA feature at all); mRNA start is only
+    as reliable as the annotation that produced it (an experimentally-
+    supported TSS for NCBI RefSeq, but often just a transcript MODEL
+    start for Augustus/MAKER predictions); ``--upstream N`` is necessarily
+    a fixed-window approximation, biologically reasonable for bacteria/
+    fungi but not for plants/animals, where regulatory elements can sit
+    much farther from the TSS than any single window value captures; and
+    the default 5'-most-TSS isoform choice is conservative/deterministic,
+    not necessarily the biologically dominant transcript.
+    (2) Added ``--all-isoforms`` (both ``extract_regulatory_regions()``
+    and ``extract_by_loci()``): extracts one upstream region per mRNA
+    isoform instead of merging all isoforms of a locus to a single
+    5'-most-TSS region. Directly addresses the limitation in (1) above —
+    mirrors ``pairwise_homolog_finder.py``'s ``--keep-all-isoforms`` flag
+    and identifier format (``{locus_tag}#{transcript_id}``, or
+    ``{locus_tag}#isoform{N}`` without one) exactly, for consistency
+    across the toolkit. Off by default; existing callers and existing
+    output are completely unaffected unless this flag is explicitly
+    passed.
+
 Examples:
     # Prokaryote (auto-detected)
     $ python3 universal_promoter_extractor.py \
@@ -123,11 +207,16 @@ Examples:
     $ python3 universal_promoter_extractor.py \
         -i references/ -o all_promoters.fasta -u 150 \
         -k bacteriocin lactobin
+
+    # Eukaryotic file, keeping every splice isoform separately
+    $ python3 universal_promoter_extractor.py \
+        -i Arabidopsis.gbff -o arab_all_isoforms.fasta -u 500 \
+        -k "WRKY transcription factor" --all-isoforms
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 import sys
 import argparse
@@ -361,6 +450,7 @@ def extract_regulatory_regions(
     keywords: list[str],
     upstream_bp: int,
     mode: str = MODE_AUTO,
+    all_isoforms: bool = False,
 ) -> Iterator[tuple[str, str, str, str, int]]:
     """Scan a GenBank file for keyword-matching genes and extract their upstream regions.
 
@@ -380,15 +470,22 @@ def extract_regulatory_regions(
                  mRNA features often lack /product qualifiers.
         Pass 2 — ``mRNA`` features: for locus_tags found in pass 1, extracts
                  upstream sequence relative to the mRNA start coordinate (= TSS).
+                 By default, isoforms of one locus are merged to a single
+                 5'-most-TSS region; pass ``all_isoforms=True`` to instead
+                 yield one region per individual isoform (see
+                 ``ALL-ISOFORMS MODE`` in the module docstring).
 
     Tracks actual extracted length separately from the requested window.
     These differ when a gene is within upstream_bp bases of a contig boundary.
 
     Args:
-        gbk_path:    Path to the target .gbk or .gbff file.
-        keywords:    Keywords to match against /product annotations (case-insensitive).
-        upstream_bp: Number of base pairs to extract upstream of the anchor coordinate.
-        mode:        Organism mode: ``"auto"``, ``"prokaryote"``, or ``"eukaryote"``.
+        gbk_path:     Path to the target .gbk or .gbff file.
+        keywords:     Keywords to match against /product annotations (case-insensitive).
+        upstream_bp:  Number of base pairs to extract upstream of the anchor coordinate.
+        mode:         Organism mode: ``"auto"``, ``"prokaryote"``, or ``"eukaryote"``.
+        all_isoforms: If ``True``, yield one upstream region per mRNA isoform
+                      instead of merging to the 5'-most TSS per locus. No
+                      effect in prokaryote mode (no isoforms to merge).
 
     Yields:
         A 5-item tuple:
@@ -454,13 +551,69 @@ def extract_regulatory_regions(
                     if not keyword_loci:
                         continue
 
+                    if all_isoforms:
+                        # ── ALL-ISOFORMS MODE (v1.7.0): yield one region per
+                        # individual mRNA feature, not merged to the 5'-most
+                        # TSS — see the module docstring's ALL-ISOFORMS MODE
+                        # section. Each isoform gets a disambiguated
+                        # identifier, mirroring pairwise_homolog_finder.py's
+                        # --keep-all-isoforms format exactly.
+                        isoform_counters: dict[str, int] = {}
+                        for feature in record.features:
+                            if feature.type != "mRNA":
+                                continue
+                            start = int(feature.location.start)
+                            end = int(feature.location.end)
+                            strand = feature.location.strand
+
+                            locus_tag = _resolve_identifier(feature, record.id)
+                            if locus_tag not in keyword_loci:
+                                if locus_tag.startswith("UNANNOTATED_"):
+                                    matched = _find_overlapping_fallback_id(
+                                        start, end, fallback_cds_spans
+                                    )
+                                    if matched is None:
+                                        continue
+                                    locus_tag = matched
+                                else:
+                                    continue
+
+                            transcript_id = feature.qualifiers.get(
+                                "transcript_id", [""]
+                            )[0]
+                            if transcript_id:
+                                isoform_key = f"{locus_tag}#{transcript_id}"
+                            else:
+                                isoform_counters[locus_tag] = (
+                                    isoform_counters.get(locus_tag, 0) + 1
+                                )
+                                isoform_key = (
+                                    f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
+                                )
+
+                            product = keyword_loci[locus_tag]
+                            upstream_seq, actual_upstream = _extract_upstream_seq(
+                                record, start, end, strand, upstream_bp, isoform_key
+                            )
+                            yield (
+                                record.id,
+                                isoform_key,
+                                product,
+                                upstream_seq,
+                                actual_upstream,
+                            )
+                        continue
+
                     # Pass 2 — find the 5'-most TSS per locus across all isoforms.
                     # In eukaryotes, a single locus_tag can have multiple mRNA
                     # features (alternative splice variants / isoforms). Each isoform
                     # may have a different Transcription Start Site. Keeping the first
-                    # one seen is wrong — it picks an arbitrary isoform. The correct
+                    # one seen is wrong — it picks an arbitrary isoform. The default
                     # anchor is the 5'-most TSS, which represents the full extent of
-                    # the regulatory region.
+                    # the regulatory region (see the module docstring's CAVEAT on why
+                    # this is a conservative, not necessarily biologically dominant,
+                    # choice — pass all_isoforms=True above to avoid this merge
+                    # entirely instead).
                     #   Forward strand (+): 5'-most TSS = smallest start coordinate.
                     #   Reverse strand (-): 5'-most TSS = largest end coordinate.
                     locus_tss: dict[str, dict] = (
@@ -539,6 +692,7 @@ def extract_by_loci(
     upstream_bp: int,
     mode: str = MODE_AUTO,
     warn_missing: bool = True,
+    all_isoforms: bool = False,
 ) -> Iterator[tuple[str, str, str, str, int, int, str]]:
     """Extract upstream regions for a specific list of locus tags.
 
@@ -561,7 +715,10 @@ def extract_by_loci(
                  all target loci. This populates product names since mRNA
                  features often lack /product qualifiers.
         Pass 2 — ``mRNA`` features: resolves the 5'-most TSS across all
-                 isoforms, then extracts upstream of that coordinate.
+                 isoforms, then extracts upstream of that coordinate. Pass
+                 ``all_isoforms=True`` to instead yield one region per
+                 individual isoform — see ``ALL-ISOFORMS MODE`` in the
+                 module docstring.
 
     Args:
         gbk_path:     Path to the GenBank file to scan.
@@ -575,13 +732,18 @@ def extract_by_loci(
                       file are expected if they belong to a different genome.
                       The pipeline should track missing tags globally across
                       all files and report once at the end.
+        all_isoforms: If ``True``, yield one upstream region per mRNA isoform
+                      instead of merging to the 5'-most TSS per locus. No
+                      effect in prokaryote mode (no isoforms to merge).
 
     Yields:
         A 7-item tuple:
         ``(seq_id, locus_tag, product, upstream_seq, actual_upstream, strand, genome_label)``
 
         - seq_id:          Contig/record ID from the GenBank file.
-        - locus_tag:       The matched locus tag.
+        - locus_tag:       The matched locus tag (or, with ``all_isoforms=True``,
+                           the disambiguated ``{locus_tag}#{transcript_id}``
+                           / ``{locus_tag}#isoformN`` identifier).
         - product:         The /product annotation (from CDS in eukaryote mode).
         - upstream_seq:    Strand-corrected upstream DNA sequence.
         - actual_upstream: Actual extracted length; may be < upstream_bp near
@@ -600,8 +762,9 @@ def extract_by_loci(
           mode (malformed annotation), only the first occurrence is yielded
           and a warning is printed.
         - In eukaryote mode, multiple mRNA features per locus (alternative
-          isoforms) are handled by selecting the 5'-most TSS, not the first
-          feature seen.
+          isoforms) are handled by selecting the 5'-most TSS by default, or
+          yielded individually when ``all_isoforms=True`` — never just the
+          first feature seen.
         - Scanning stops early once all requested locus tags have been found.
     """
     resolved_mode = _detect_organism_mode(gbk_path) if mode == MODE_AUTO else mode
@@ -703,6 +866,74 @@ def extract_by_loci(
                     # The already_yielded guard below prevents re-processing a locus
                     # that was found in a previous record (should not happen in
                     # well-formed files, but guards against malformed ones).
+                    if all_isoforms:
+                        # ── ALL-ISOFORMS MODE (v1.7.0): yield one region per
+                        # individual mRNA feature instead of merging to the
+                        # 5'-most TSS — see the module docstring's
+                        # ALL-ISOFORMS MODE section. Each isoform gets a
+                        # disambiguated identifier, mirroring
+                        # pairwise_homolog_finder.py's --keep-all-isoforms
+                        # format exactly. The ORIGINAL locus_tag is only
+                        # marked found/removed from `remaining` after every
+                        # isoform in THIS record has been yielded, so a
+                        # multi-isoform locus split across feature order
+                        # within one record is never partially missed.
+                        isoform_counters: dict[str, int] = {}
+                        found_this_locus: set[str] = set()
+                        for feature in record.features:
+                            if feature.type != "mRNA":
+                                continue
+                            start = int(feature.location.start)
+                            end = int(feature.location.end)
+                            strand = feature.location.strand
+
+                            locus_tag = _resolve_identifier(feature, record.id)
+                            if locus_tag not in target_set:
+                                if locus_tag.startswith("UNANNOTATED_"):
+                                    matched = _find_overlapping_fallback_id(
+                                        start, end, fallback_cds_spans
+                                    )
+                                    if matched is None:
+                                        continue
+                                    locus_tag = matched
+                                else:
+                                    continue
+                            if locus_tag in already_yielded:
+                                continue  # processed in a prior record
+
+                            transcript_id = feature.qualifiers.get(
+                                "transcript_id", [""]
+                            )[0]
+                            if transcript_id:
+                                isoform_key = f"{locus_tag}#{transcript_id}"
+                            else:
+                                isoform_counters[locus_tag] = (
+                                    isoform_counters.get(locus_tag, 0) + 1
+                                )
+                                isoform_key = (
+                                    f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
+                                )
+
+                            product = cds_products.get(locus_tag, "Unknown product")
+                            upstream_seq, actual_upstream = _extract_upstream_seq(
+                                record, start, end, strand, upstream_bp, isoform_key
+                            )
+                            found_this_locus.add(locus_tag)
+                            yield (
+                                record.id,
+                                isoform_key,
+                                product,
+                                upstream_seq,
+                                actual_upstream,
+                                strand,
+                                genome_label,
+                            )
+
+                        for lt in found_this_locus:
+                            already_yielded.add(lt)
+                            remaining.discard(lt)
+                        continue
+
                     locus_tss: dict[str, dict] = {}
 
                     for feature in record.features:
@@ -846,6 +1077,23 @@ def get_args() -> argparse.Namespace:
             "Use explicit mode when auto-detection is unreliable."
         ),
     )
+    parser.add_argument(
+        "--all-isoforms",
+        action="store_true",
+        default=False,
+        help=(
+            "Extract one upstream region PER ISOFORM instead of merging all "
+            "isoforms of a locus into a single 5'-most-TSS region (the "
+            "default). The default is a conservative, deterministic choice "
+            "but not necessarily the biologically dominant isoform — a "
+            "rare transcript variant with an unusually far-upstream TSS "
+            "would be chosen over a well-supported canonical isoform with "
+            "a closer TSS. Each isoform gets a disambiguated identifier "
+            "({locus_tag}#{transcript_id}, or {locus_tag}#isoformN without "
+            "a transcript_id). No effect on prokaryotic files. Off by "
+            "default — existing output is unchanged unless you opt in."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -861,6 +1109,11 @@ def main() -> None:
     print(f"[*] Upstream window    : {args.upstream}bp", file=sys.stderr)
     print(f"[*] Keywords           : {args.keywords}", file=sys.stderr)
     print(f"[*] Mode               : {args.mode}", file=sys.stderr)
+    if args.all_isoforms:
+        print(
+            f"[*] Isoforms           : ALL (one region per isoform, not merged)",
+            file=sys.stderr,
+        )
     print(file=sys.stderr)
 
     hits_found = 0
@@ -894,7 +1147,11 @@ def main() -> None:
                     file_mode = args.mode
 
                 for seq_id, locus, prod, seq, actual_up in extract_regulatory_regions(
-                    file_path, args.keywords, args.upstream, mode=file_mode
+                    file_path,
+                    args.keywords,
+                    args.upstream,
+                    mode=file_mode,
+                    all_isoforms=args.all_isoforms,
                 ):
                     dedup_key = (file_path.stem, locus)
                     if dedup_key in seen_loci:
