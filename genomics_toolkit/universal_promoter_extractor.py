@@ -187,6 +187,18 @@ Note:
     output are completely unaffected unless this flag is explicitly
     passed.
 
+    v1.7.1: Confirmed (by user inspection) that the isoform-disambiguation
+    logic added in v1.7.0 (``{locus_tag}#{transcript_id}`` /
+    ``{locus_tag}#isoform{N}``) was duplicated inline in two places in
+    this file, AND duplicated again, separately, in
+    pairwise_homolog_finder.py's ``--keep-all-isoforms`` — four copies of
+    essentially the same pattern across two scripts, differing only in
+    which qualifier (``transcript_id`` vs ``protein_id``) each looked up.
+    Both call sites here now use the new shared
+    ``utils.disambiguate_isoform_id()`` instead. No behavior change —
+    confirmed by re-running this file's existing ``--all-isoforms`` tests
+    before and after the swap.
+
 Examples:
     # Prokaryote (auto-detected)
     $ python3 universal_promoter_extractor.py \
@@ -216,7 +228,7 @@ Examples:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 
 import sys
 import argparse
@@ -231,7 +243,11 @@ except ImportError:
         "ERROR: Biopython is required but not installed.\n"
         "       Install it with: pip install biopython"
     )
-from utils import stream_reference_files, extract_upstream_window
+from utils import (
+    stream_reference_files,
+    extract_upstream_window,
+    disambiguate_isoform_id,
+)
 
 # ── Mode constants ─────────────────────────────────────────────────────────────
 
@@ -494,7 +510,8 @@ def extract_regulatory_regions(
     Raises:
         ValueError: If the GenBank file is malformed or unreadable.
     """
-    resolved_mode = _detect_organism_mode(gbk_path) if mode == MODE_AUTO else mode
+    resolved_mode = _detect_organism_mode(
+        gbk_path) if mode == MODE_AUTO else mode
 
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
@@ -578,18 +595,12 @@ def extract_regulatory_regions(
                                 else:
                                     continue
 
-                            transcript_id = feature.qualifiers.get(
-                                "transcript_id", [""]
-                            )[0]
-                            if transcript_id:
-                                isoform_key = f"{locus_tag}#{transcript_id}"
-                            else:
-                                isoform_counters[locus_tag] = (
-                                    isoform_counters.get(locus_tag, 0) + 1
-                                )
-                                isoform_key = (
-                                    f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
-                                )
+                            isoform_key = disambiguate_isoform_id(
+                                locus_tag,
+                                feature,
+                                isoform_counters,
+                                id_qualifier="transcript_id",
+                            )
 
                             product = keyword_loci[locus_tag]
                             upstream_seq, actual_upstream = _extract_upstream_seq(
@@ -767,7 +778,8 @@ def extract_by_loci(
           first feature seen.
         - Scanning stops early once all requested locus tags have been found.
     """
-    resolved_mode = _detect_organism_mode(gbk_path) if mode == MODE_AUTO else mode
+    resolved_mode = _detect_organism_mode(
+        gbk_path) if mode == MODE_AUTO else mode
 
     target_set: set[str] = set(locus_tags)
     remaining: set[str] = set(locus_tags)
@@ -901,20 +913,15 @@ def extract_by_loci(
                             if locus_tag in already_yielded:
                                 continue  # processed in a prior record
 
-                            transcript_id = feature.qualifiers.get(
-                                "transcript_id", [""]
-                            )[0]
-                            if transcript_id:
-                                isoform_key = f"{locus_tag}#{transcript_id}"
-                            else:
-                                isoform_counters[locus_tag] = (
-                                    isoform_counters.get(locus_tag, 0) + 1
-                                )
-                                isoform_key = (
-                                    f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
-                                )
+                            isoform_key = disambiguate_isoform_id(
+                                locus_tag,
+                                feature,
+                                isoform_counters,
+                                id_qualifier="transcript_id",
+                            )
 
-                            product = cds_products.get(locus_tag, "Unknown product")
+                            product = cds_products.get(
+                                locus_tag, "Unknown product")
                             upstream_seq, actual_upstream = _extract_upstream_seq(
                                 record, start, end, strand, upstream_bp, isoform_key
                             )
@@ -985,7 +992,8 @@ def extract_by_loci(
                                 f"using 5'-most TSS.",
                                 file=sys.stderr,
                             )
-                        product = cds_products.get(locus_tag, "Unknown product")
+                        product = cds_products.get(
+                            locus_tag, "Unknown product")
                         upstream_seq, actual_upstream = _extract_upstream_seq(
                             record,
                             bounds["start"],
@@ -1165,7 +1173,8 @@ def main() -> None:
                     fasta_header = f">{seq_id}_{locus}_{clean_prod}_up{actual_up}"
 
                     out_file.write(f"{fasta_header}\n{seq}\n")
-                    print(f"      [Hit] {locus} | {prod[:50]}", file=sys.stderr)
+                    print(
+                        f"      [Hit] {locus} | {prod[:50]}", file=sys.stderr)
 
         print("\n" + "=" * 50, file=sys.stderr)
         print(

@@ -151,6 +151,16 @@ Note:
     naturally low-complexity or repetitive, so excluding them
     unconditionally could discard genuine biology.
 
+    v1.8.1: Confirmed (by user inspection) that the isoform-disambiguation
+    logic added in v1.8.0 (``{locus_tag}#{protein_id}`` /
+    ``{locus_tag}#isoform{N}``) was duplicated inline in two places in
+    this file, AND duplicated again, separately, in
+    universal_promoter_extractor.py's ``--all-isoforms`` — four copies of
+    essentially the same pattern across two scripts. Both call sites here
+    now use the new shared ``utils.disambiguate_isoform_id()`` instead.
+    No behavior change — confirmed by re-running this file's existing
+    ``--keep-all-isoforms`` tests before and after the swap.
+
 Example:
     Bacteriocin screen with signal peptide trimming and domain-centric search::
 
@@ -190,7 +200,7 @@ Example:
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 
 import sys
 import argparse
@@ -219,7 +229,12 @@ except ImportError:
     HAS_TQDM = False
     tqdm = lambda x, **kwargs: x  # Fallback: just iterate normally
 
-from utils import stream_reference_files, calculate_mature_core, smart_open
+from utils import (
+    stream_reference_files,
+    calculate_mature_core,
+    smart_open,
+    disambiguate_isoform_id,
+)
 
 # ── Module-level aligner and matrix (created ONCE, reused for all comparisons) ─
 # Moving PairwiseAligner() out of the comparison function avoids re-instantiating
@@ -268,7 +283,8 @@ class _RefProtein:
     sequence: str  # Full original sequence (stored for TSV output)
     cmp_seq: str  # Sequence used for alignment (full or mature)
     kmers: frozenset  # Pre-computed k-mers of cmp_seq
-    length: int  # len(cmp_seq) — used for ratio/coverage math (comparison-space length)
+    # len(cmp_seq) — used for ratio/coverage math (comparison-space length)
+    length: int
     full_length: (
         int  # len(sequence) — used only to pick the longest isoform per locus_tag
     )
@@ -297,7 +313,8 @@ class HomologHit:
     ref_length: int
     query_coverage: float  # Non-gap query residues / query_length (0.0-1.0)
     ref_coverage: float  # Non-gap ref residues / ref_length (0.0-1.0)
-    coverage: float  # The coverage value actually used for filtering (mode-dependent)
+    # The coverage value actually used for filtering (mode-dependent)
+    coverage: float
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -636,7 +653,8 @@ def extract_proteins_from_gbk(
         (locus_tag, or a safe fallback — see ``_resolve_identifier()``) by
         default; one per individual isoform when ``keep_all_isoforms=True``.
     """
-    print(f"\n[*] Extracting proteins from query: {gbk_path.name}", file=sys.stderr)
+    print(
+        f"\n[*] Extracting proteins from query: {gbk_path.name}", file=sys.stderr)
 
     locus_best: dict[str, Protein] = {}
     isoform_counters: dict[str, int] = {}
@@ -664,7 +682,8 @@ def extract_proteins_from_gbk(
             total_candidates += 1
 
             mature_seq = (
-                calculate_mature_core(translation) if apply_mature else translation
+                calculate_mature_core(
+                    translation) if apply_mature else translation
             )
 
             # Skip candidates whose mature core is zero-length
@@ -678,12 +697,9 @@ def extract_proteins_from_gbk(
                 continue
 
             if keep_all_isoforms:
-                protein_id = feature.qualifiers.get("protein_id", [""])[0]
-                if protein_id:
-                    key = f"{locus_tag}#{protein_id}"
-                else:
-                    isoform_counters[locus_tag] = isoform_counters.get(locus_tag, 0) + 1
-                    key = f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
+                key = disambiguate_isoform_id(
+                    locus_tag, feature, isoform_counters, id_qualifier="protein_id"
+                )
                 locus_best[key] = Protein(
                     locus_tag=key,
                     product=product,
@@ -741,7 +757,8 @@ def extract_proteins_from_gbk(
                     file=sys.stderr,
                 )
 
-    print(f"\n[*] Extracted {len(proteins)} protein(s) from query.\n", file=sys.stderr)
+    print(
+        f"\n[*] Extracted {len(proteins)} protein(s) from query.\n", file=sys.stderr)
     return proteins
 
 
@@ -762,7 +779,7 @@ def _build_kmers(seq: str, k: int = _K) -> frozenset[str]:
     """
     if len(seq) < k:
         return frozenset()
-    return frozenset(seq[i : i + k] for i in range(len(seq) - k + 1))
+    return frozenset(seq[i: i + k] for i in range(len(seq) - k + 1))
 
 
 def _shannon_entropy(seq: str) -> float:
@@ -952,7 +969,8 @@ def calculate_identity(seq_a: str, seq_b: str) -> tuple[float, int, int, int, in
     if alignment_length == 0:
         return 0.0, 0, 0, 0, 0
 
-    identical = sum(1 for a, b in zip(aligned_a, aligned_b) if a == b and a != "-")
+    identical = sum(1 for a, b in zip(
+        aligned_a, aligned_b) if a == b and a != "-")
     mismatches = sum(
         1 for a, b in zip(aligned_a, aligned_b) if a != b and a != "-" and b != "-"
     )
@@ -1035,7 +1053,8 @@ def _load_reference_proteins(
             # Pre-compute the comparison sequence and its k-mers right here.
             # This is the core fix for Flaw 1: these operations now run exactly
             # once per reference protein, not once per (query × reference) pair.
-            cmp_seq = calculate_mature_core(translation) if use_mature else translation
+            cmp_seq = calculate_mature_core(
+                translation) if use_mature else translation
 
             # Skip candidates whose mature core is zero-length or None
             if not cmp_seq or len(cmp_seq) == 0:
@@ -1055,15 +1074,13 @@ def _load_reference_proteins(
                 continue
 
             if keep_all_isoforms:
-                protein_id = feature.qualifiers.get("protein_id", [""])[0]
-                if protein_id:
-                    key = f"{locus_tag}#{protein_id}"
-                else:
-                    isoform_counters[locus_tag] = isoform_counters.get(locus_tag, 0) + 1
-                    key = f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
+                key = disambiguate_isoform_id(
+                    locus_tag, feature, isoform_counters, id_qualifier="protein_id"
+                )
                 locus_best[key] = _RefProtein(
                     locus_tag=key,
-                    product=feature.qualifiers.get("product", ["Unknown product"])[0],
+                    product=feature.qualifiers.get(
+                        "product", ["Unknown product"])[0],
                     sequence=translation,
                     cmp_seq=cmp_seq,
                     kmers=_build_kmers(cmp_seq),
@@ -1077,7 +1094,8 @@ def _load_reference_proteins(
 
                 locus_best[locus_tag] = _RefProtein(
                     locus_tag=locus_tag,
-                    product=feature.qualifiers.get("product", ["Unknown product"])[0],
+                    product=feature.qualifiers.get(
+                        "product", ["Unknown product"])[0],
                     sequence=translation,
                     cmp_seq=cmp_seq,
                     kmers=_build_kmers(cmp_seq),
@@ -1526,7 +1544,8 @@ def write_fasta(hits: list[HomologHit], fasta_path: Path) -> None:
 
         # Write reference sequences grouped by reference file
         # Sort by ref_file, then by ref_locus for consistent output
-        sorted_hits = sorted(hits, key=lambda h: (h.ref_file, h.ref_locus, -h.identity))
+        sorted_hits = sorted(hits, key=lambda h: (
+            h.ref_file, h.ref_locus, -h.identity))
 
         for hit in sorted_hits:
             seq_id = (hit.ref_locus, hit.ref_file)
@@ -1608,7 +1627,8 @@ def write_log_file(
     if args.output:
         cmd_parts.append(f"-o {shlex.quote(str(args.output))}")
     if args.output_fasta:
-        cmd_parts.append(f"--output-fasta {shlex.quote(str(args.output_fasta))}")
+        cmd_parts.append(
+            f"--output-fasta {shlex.quote(str(args.output_fasta))}")
     if args.verbose:
         cmd_parts.append("--verbose")
 
@@ -1651,12 +1671,15 @@ def write_log_file(
         log.write(f"  Min Query Length     : {args.min_length} aa\n")
         if args.max_length:
             log.write(f"  Max Query Length     : {args.max_length} aa\n")
-        log.write(f"  RBH Mode             : {'YES' if args.rbh else 'NO'}\n")
+        log.write(
+            f"  RBH Mode             : {'YES' if args.rbh else 'NO'}\n"
+        )
         log.write(
             f"  Keep All Isoforms    : {'YES' if args.keep_all_isoforms else 'NO'}\n"
         )
         if args.min_complexity > 0.0:
-            log.write(f"  Min Complexity       : {args.min_complexity:.2f} bits\n")
+            log.write(
+                f"  Min Complexity       : {args.min_complexity:.2f} bits\n")
         log.write("\n")
 
         # Query information
@@ -1665,7 +1688,8 @@ def write_log_file(
         log.write(f"  Proteins Extracted   : {len(query_proteins)}\n")
         if query_proteins:
             lengths = [p.length for p in query_proteins]
-            log.write(f"  Query Length Range   : {min(lengths)}–{max(lengths)} aa\n")
+            log.write(
+                f"  Query Length Range   : {min(lengths)}–{max(lengths)} aa\n")
         log.write("\n")
 
         # Reference information
@@ -1719,8 +1743,10 @@ def write_log_file(
                 "                         alignment_length, query_length, ref_length\n"
             )
         if args.output_fasta:
-            log.write(f"  FASTA Sequences      : {args.output_fasta.resolve()}\n")
-            log.write("  FASTA Use Cases      : MAFFT, IQ-TREE, HMMER, InterProScan\n")
+            log.write(
+                f"  FASTA Sequences      : {args.output_fasta.resolve()}\n")
+            log.write(
+                "  FASTA Use Cases      : MAFFT, IQ-TREE, HMMER, InterProScan\n")
         log.write(f"  Log File             : {log_path.resolve()}\n")
         log.write("\n")
 

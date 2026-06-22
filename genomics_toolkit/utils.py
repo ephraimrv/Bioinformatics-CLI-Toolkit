@@ -106,11 +106,26 @@ Note:
     Purely additive: every previously-recognized extension is unchanged,
     so no existing caller's behavior is affected for any file that isn't
     ".mpfa".
+
+    v1.4.4: Added ``disambiguate_isoform_id()``. Found while reviewing
+    where else the toolkit's "keep every isoform instead of just one
+    representative" pattern had landed: confirmed the same disambiguated-
+    identifier logic (``{locus_tag}#{per-isoform-id}``, or
+    ``{locus_tag}#isoform{N}`` as a counter-based fallback) was
+    independently duplicated inline, twice each, in
+    pairwise_homolog_finder.py's ``--keep-all-isoforms`` and
+    universal_promoter_extractor.py's ``--all-isoforms`` — four copies of
+    essentially the same logic across two files, differing only in which
+    qualifier (``protein_id`` vs ``transcript_id``) each happened to look
+    up. All four call sites now use this one shared function instead.
+    No behavior change at any of the four call sites — confirmed by
+    re-running each script's existing isoform-mode tests before and
+    after the swap.
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.3"
+__version__ = "1.4.4"
 
 import argparse
 import contextlib
@@ -261,7 +276,8 @@ def extract_upstream_window(
     if strand == 1:
         upstream_seq = str(record.seq[slice_start:slice_end])
     else:
-        upstream_seq = str(record.seq[slice_start:slice_end].reverse_complement())
+        upstream_seq = str(
+            record.seq[slice_start:slice_end].reverse_complement())
     return upstream_seq, actual_upstream, slice_start, slice_end
 
 
@@ -424,7 +440,8 @@ def extract_upstream_sequence_with_length(
             return seq, start, end, strand, actual_upstream
 
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError) as e:
-        raise ValueError(f"Failed to parse GenBank file {gbk_path.name}: {e}") from e
+        raise ValueError(
+            f"Failed to parse GenBank file {gbk_path.name}: {e}") from e
 
     raise ValueError(f"Locus tag '{locus_tag}' not found in {gbk_path.name}.")
 
@@ -458,6 +475,61 @@ def extract_upstream_sequence(
         gbk_path, locus_tag, upstream_bp
     )
     return seq, start, end, strand
+
+
+def disambiguate_isoform_id(
+    locus_tag: str,
+    feature,
+    isoform_counters: dict[str, int],
+    id_qualifier: str = "protein_id",
+) -> str:
+    """Builds a disambiguated identifier for one isoform of a multi-isoform locus.
+
+    Confirmed duplicated, inline, in two places each across two different
+    scripts (``pairwise_homolog_finder.py``'s ``--keep-all-isoforms`` and
+    ``universal_promoter_extractor.py``'s ``--all-isoforms`` — 4 copies of
+    essentially the same logic total) before being consolidated here.
+    Both flags exist for the same reason: a "keep only the longest/5'-most
+    representative isoform" default is a reasonable, deterministic choice,
+    but not necessarily the biologically dominant one — when a caller
+    wants every isoform individually instead, each one needs its own
+    addressable identifier rather than colliding on the shared
+    ``locus_tag``.
+
+    Resolution order:
+      1. ``feature.qualifiers[id_qualifier]`` — typically unique per
+         isoform (``/protein_id`` on a CDS feature;
+         ``/transcript_id`` on an mRNA feature — callers pass whichever
+         qualifier their feature type actually carries). Returns
+         ``f"{locus_tag}#{isoform_id}"``.
+      2. If that qualifier is absent, falls back to a per-locus running
+         counter, mutating ``isoform_counters`` in place (the caller owns
+         this dict and must reuse the SAME dict across every call within
+         one extraction pass, so the counter persists per locus rather
+         than resetting). Returns ``f"{locus_tag}#isoform{N}"``.
+
+    Args:
+        locus_tag:        The resolved base identifier for this isoform's
+                           gene (shared across all its isoforms).
+        feature:           A Biopython SeqFeature for this specific isoform.
+        isoform_counters: A ``{locus_tag: count}`` dict the caller owns and
+                           reuses across every call in one extraction pass
+                           — mutated in place to track how many
+                           qualifier-less isoforms of this locus have
+                           already been assigned a counter-based ID.
+        id_qualifier:      Which qualifier to look up for a per-isoform ID.
+                           ``"protein_id"`` for CDS features, ``"transcript_id"``
+                           for mRNA features. Default: ``"protein_id"``.
+
+    Returns:
+        A disambiguated string identifier, never colliding with another
+        isoform of the same locus within one extraction pass.
+    """
+    isoform_id = feature.qualifiers.get(id_qualifier, [""])[0]
+    if isoform_id:
+        return f"{locus_tag}#{isoform_id}"
+    isoform_counters[locus_tag] = isoform_counters.get(locus_tag, 0) + 1
+    return f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
 
 
 def looks_eukaryotic(gbk_path: Path) -> bool:
@@ -539,7 +611,7 @@ def calculate_mature_core(full_protein: str) -> str:
             return mature_peptide[: i + 1]
 
         if i + 5 <= len(mature_peptide):
-            window = mature_peptide[i : i + 5]
+            window = mature_peptide[i: i + 5]
             analyzer = ProteinAnalysis(window)
             avg_hydro = analyzer.gravy()
 
@@ -564,7 +636,7 @@ def smart_open(filename: Path | None) -> Iterator[IO]:
 
 def wrap_fasta(sequence: str, width: int = 60) -> str:
     """Wraps a sequence string into multiple lines for FASTA formatting."""
-    return "\n".join(sequence[i : i + width] for i in range(0, len(sequence), width))
+    return "\n".join(sequence[i: i + width] for i in range(0, len(sequence), width))
 
 
 def base_parser(
