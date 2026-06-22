@@ -9,12 +9,14 @@ universal_promoter_extractor.py into a single automated workflow.
 
 Replaces homology_extractor.py, which used exact substring matching
 (if peptide in translation) — a method that silently misses distant
-orthologs with even a single amino acid substitution.
+homologs with even a single amino acid substitution.
 
 This pipeline uses real sequence alignment (Smith-Waterman / BLOSUM62)
-to identify true evolutionary orthologs, then extracts their upstream
-regulatory regions for MEME motif discovery. Works on both prokaryotic
-and eukaryotic genomes without requiring separate scripts.
+to identify candidate homologs (establishing true orthology specifically
+would additionally require reciprocal-best-hit or phylogenetic analysis —
+see pairwise_homolog_finder.py's own "Terminology note"), then extracts
+their upstream regulatory regions for MEME motif discovery. Works on both
+prokaryotic and eukaryotic genomes without requiring separate scripts.
 
 WORKFLOW:
     Step 1  Load query proteins from a GenBank file (always treated as prokaryotic
@@ -42,16 +44,26 @@ WHY SEQUENCE-LEVEL REDUNDANCY MATTERS (--dedup-identity):
     confidence/significance without adding real evidence — a problem if
     you intend to report that significance in a manuscript.
 
-    --dedup-identity THRESHOLD performs greedy single-linkage clustering on
-    the extracted upstream DNA sequences themselves (local pairwise
-    alignment, identity = matches / alignment_length, BLAST/EMBOSS
-    convention — same definition used by pairwise_homolog_finder.py).
-    Sequences arrive already ordered by ortholog-hit identity (best matches
-    to the query first), so the first sequence in each redundant cluster —
-    the best-supported one — is kept as the representative; the rest are
-    logged to <stem>.redundancy.tsv (locus, matched representative, percent
-    identity) for full traceability, not silently discarded.
+    --dedup-identity THRESHOLD (paired with --dedup-coverage, see v1.5.0
+    changelog below) performs complete-linkage clustering on the extracted
+    upstream DNA sequences themselves (local pairwise alignment, identity =
+    matches / alignment_length, BLAST/EMBOSS convention — same definition
+    used by pairwise_homolog_finder.py; coverage = the SMALLER of how much
+    of each sequence's own full length is covered by non-gap aligned
+    residues). Sequences arrive already ordered by homolog-hit identity
+    (best matches to the query first), so the first sequence in each
+    redundant cluster — the best-supported one — is kept as the
+    representative; the rest are logged to <stem>.redundancy.tsv (locus,
+    matched representative, percent identity, percent coverage) for full
+    traceability, not silently discarded.
 
+    SCOPE CAVEAT: this filter is meant for preparing input to motif
+    discovery, where near-duplicate sequences are not statistically
+    independent observations. It is NOT meant for, and should NOT be used
+    when studying, promoter evolution or paralog divergence itself — in
+    that context, the "redundant" sequences this filter removes (e.g.
+    geneA/geneB/geneC, recent paralogs all genuinely regulated by the same
+    regulator) are exactly the biological signal you would want to keep.
     Off by default — existing output is unchanged unless you opt in.
 
 ORGANISM SUPPORT:
@@ -73,26 +85,73 @@ OUTPUTS:
     <stem>.tsv         Extraction results table: one row per upstream region,
                        with columns for locus_tag, genome, contig, product,
                        strand, and upstream length.
-    <stem>.hits.tsv    Ortholog alignment hits table: one row per hit from
+    <stem>.hits.tsv    Homolog alignment hits table: one row per hit from
                        Step 2, with query/ref locus, identity, alignment
                        length, and source genome. Full version of the
                        truncated terminal display.
     <stem>.redundancy.tsv  (Only with --dedup-identity) One row per DROPPED
-                       locus: which representative locus it matched and at
-                       what percent identity. Not written if no sequences
-                       were dropped.
+                       locus: which representative locus it matched, and at
+                       what percent identity AND percent coverage (v1.5.0 —
+                       see changelog). Not written if no sequences were
+                       dropped.
 
 WHY THIS REPLACES homology_extractor.py:
     The old script used:
         if core_peptide in translation:
     This is exact substring matching — one amino acid substitution and
-    the ortholog is silently missed. Real homology requires alignment,
+    the homolog is silently missed. Real homology requires alignment,
     which is what pairwise_homolog_finder.py provides.
 
 Note:
     Associated with ongoing, unpublished research (manuscript in
     preparation). Correct attribution is requested when used in
     derivative works.
+
+    v1.5.0: Fixed two confirmed bugs and one terminology inconsistency
+    found during review.
+    (1) TERMINOLOGY: this script's own docstring and runtime output said
+    "ortholog"/"orthologs" in 7 places, despite importing a function
+    literally named ``find_homologs`` from pairwise_homolog_finder.py —
+    which carries its own explicit "Terminology note" warning that
+    pairwise alignment establishes homology, not orthology specifically
+    (that requires reciprocal-best-hit or phylogenetic analysis, out of
+    scope here too). Corrected throughout to "homolog"/"candidate
+    homolog," consistent with the script it wraps.
+    (2) REDUNDANCY FILTER, IDENTITY ALONE IS NOT ENOUGH: ``deduplicate_promoters()``
+    previously dropped a promoter as "redundant" based on LOCAL alignment
+    identity alone. Confirmed empirically: two synthetic 1000bp promoters
+    that are 920bp (92%) mutually unrelated, sharing only one 80bp
+    conserved motif block at ~95% identity, produce a local-alignment
+    identity of 97.6% — comfortably clearing a 90% --dedup-identity
+    threshold and getting incorrectly dropped as a duplicate, even though
+    the two promoters are almost entirely different. Smith-Waterman local
+    alignment only "sees" the best-matching sub-region; it says nothing
+    about how much of either FULL sequence that region represents. Fixed
+    by requiring BOTH identity AND coverage to clear their respective
+    thresholds — coverage is the SMALLER of how much of each sequence's
+    own full length is covered by non-gap aligned residues (mirroring
+    pairwise_homolog_finder.py's own coverage-correctness fix), so a
+    small shared motif block can no longer pass on identity alone: it
+    would cover only ~8% of either 1000bp promoter in the example above,
+    failing any reasonable coverage threshold. New ``--dedup-coverage``
+    flag (default 0.80), used alongside ``--dedup-identity``.
+    (3) REDUNDANCY FILTER, CHAINING: the previous algorithm compared each
+    new record only against already-KEPT cluster representatives, not
+    every existing cluster member. Confirmed by direct test: with
+    A~B=91%, B~C=91%, A~C=70% (all below a 90% threshold for the A-C
+    pair), depending on arrival order, A and C could both end up dropped
+    as "redundant with B" without A and C ever being compared to each
+    other directly — despite genuinely failing the threshold between
+    themselves. Fixed by switching to complete-linkage clustering: a new
+    record only joins an existing cluster if it meets BOTH thresholds
+    against EVERY member already in that cluster, not just one
+    representative. Still O(n^2) pairwise alignments in the typical case;
+    see ``deduplicate_promoters()``'s own docstring for the worst case.
+    Also documented (see WHY SEQUENCE-LEVEL REDUNDANCY MATTERS above) that
+    this filter is for motif-discovery input preparation specifically,
+    not for promoter-evolution or paralog-divergence studies, where the
+    "redundant" sequences it removes may be exactly the biological signal
+    of interest.
 
 Examples:
     # Prokaryotic target (auto-detected)
@@ -129,12 +188,12 @@ Examples:
         -q C5_genome.gbk \
         -r references/ \
         -o all_promoters.fasta \
-        --dedup-identity 0.90
+        --dedup-identity 0.90 --dedup-coverage 0.80
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import sys
 import argparse
@@ -214,84 +273,133 @@ class PromoterRecord:
     strand_symbol: str
 
 
-def _dna_identity(seq_a: str, seq_b: str) -> float:
-    """Computes percent identity between two DNA sequences via local alignment.
+def _dna_identity_coverage(seq_a: str, seq_b: str) -> tuple[float, float]:
+    """Computes percent identity AND coverage between two DNA sequences.
 
     Mirrors the identity definition in pairwise_homolog_finder.calculate_identity()
     (identical positions / alignment_length, the BLAST/EMBOSS convention) so
     --dedup-identity thresholds are directly comparable to --identity thresholds
     elsewhere in this toolkit.
 
+    COVERAGE (v1.5.0): identity alone is not sufficient to judge whether two
+    promoters are genuinely redundant — Smith-Waterman LOCAL alignment finds
+    the single best-matching sub-region and reports identity over just that
+    region, regardless of how much of either full sequence it represents.
+    Confirmed empirically: two synthetic 1000bp sequences that are 920bp
+    (92%) mutually unrelated, sharing only one 80bp conserved motif block at
+    ~95% identity, report 97.6% LOCAL identity — comfortably clearing a 90%
+    threshold despite the sequences being almost entirely different.
+    Coverage closes this gap: it is the SMALLER of how much of EACH
+    sequence's own full length is covered by non-gap aligned residues
+    (mirroring pairwise_homolog_finder.py's own coverage-correctness fix —
+    never computed from alignment_length directly, which can exceed either
+    sequence's real length and produce coverage above 100%). Using the
+    smaller of the two deliberately requires BOTH sequences to be
+    substantially covered, not just one: in the 80bp-shared-motif example,
+    coverage would be only ~8% of either 1000bp promoter, failing any
+    reasonable coverage threshold even though identity alone looked high.
+
     Args:
         seq_a: First DNA sequence.
         seq_b: Second DNA sequence.
 
     Returns:
-        Percent identity as a 0.0-1.0 fraction. Returns 0.0 for empty input
-        or if no alignment is found.
+        A tuple of (identity, coverage), each a 0.0-1.0 fraction. Returns
+        (0.0, 0.0) for empty input or if no alignment is found.
     """
     if not seq_a or not seq_b:
-        return 0.0
+        return 0.0, 0.0
 
     alignments = _DNA_ALIGNER.align(seq_a, seq_b)
     best = next(iter(alignments), None)
     if best is None:
-        return 0.0
+        return 0.0, 0.0
 
     aligned_a, aligned_b = best[0], best[1]
     alignment_length = len(aligned_a)
     if alignment_length == 0:
-        return 0.0
+        return 0.0, 0.0
 
     identical = sum(1 for a, b in zip(aligned_a, aligned_b) if a == b and a != "-")
-    return identical / alignment_length
+    identity = identical / alignment_length
+
+    a_nongap = sum(1 for c in aligned_a if c != "-")
+    b_nongap = sum(1 for c in aligned_b if c != "-")
+    cov_a = a_nongap / len(seq_a) if seq_a else 0.0
+    cov_b = b_nongap / len(seq_b) if seq_b else 0.0
+    coverage = min(cov_a, cov_b)
+
+    return identity, coverage
 
 
 def deduplicate_promoters(
-    records: list[PromoterRecord], threshold: float
-) -> tuple[list[PromoterRecord], list[tuple[PromoterRecord, str, float]]]:
-    """Greedy single-linkage clustering on extracted upstream DNA sequences.
+    records: list[PromoterRecord], identity_threshold: float, coverage_threshold: float
+) -> tuple[list[PromoterRecord], list[tuple[PromoterRecord, str, float, float]]]:
+    """Complete-linkage clustering on extracted upstream DNA sequences.
 
     Processes records in the order given (which, as called from main(), is
-    ortholog-hit-identity order — best matches to the query first). For each
-    record, compares it against every representative kept so far; if its
-    identity to ANY existing representative meets or exceeds the threshold,
-    it is dropped as redundant and the first (best-supported) representative
-    is kept. This means cluster representatives are always the most
-    query-relevant member of their redundancy group, not an arbitrary pick.
+    homolog-hit-identity order — best matches to the query first). A record
+    joins an existing cluster only if it meets BOTH the identity and
+    coverage thresholds against EVERY member already in that cluster — not
+    just the cluster's first/representative member. The first (best-
+    supported) record in a cluster is always its representative; redundancy
+    is reported relative to that representative.
 
-    This is O(n^2) pairwise alignments. Fine for the dozens-to-low-hundreds
-    of loci typical of a targeted promoter search; would need a smarter
-    approach (e.g. k-mer pre-filtering like pairwise_homolog_finder.py uses)
-    if ever applied to thousands of sequences.
+    WHY COMPLETE-LINKAGE, NOT "compare against one representative" (v1.5.0):
+    the earlier version only compared a new record against each cluster's
+    representative. Confirmed by direct test: with A~B=91%, B~C=91%, and
+    A~C=70% (all using a 90% threshold), depending on arrival order, A and C
+    could both end up dropped as "redundant with B" without A and C ever
+    being compared to each other — despite genuinely failing the threshold
+    between themselves. Requiring a new record to match EVERY existing
+    cluster member closes this gap: A and C would never be placed in the
+    same cluster unless they themselves also clear the threshold.
+
+    This is O(n^2) pairwise alignments in the common case (most records
+    either join the first cluster they're compared against or start a new
+    one), worse in pathological cases with many large clusters. Fine for the
+    dozens-to-low-hundreds of loci typical of a targeted promoter search;
+    would need a smarter approach (e.g. k-mer pre-filtering like
+    pairwise_homolog_finder.py uses) if ever applied to thousands of
+    sequences.
 
     Args:
         records: Extracted promoter records, in priority order.
-        threshold: Minimum identity (0.0-1.0) to consider two sequences
-            redundant.
+        identity_threshold: Minimum identity (0.0-1.0) to consider two
+            sequences redundant.
+        coverage_threshold: Minimum coverage (0.0-1.0) — the smaller of how
+            much of each sequence's own length is aligned — also required
+            for two sequences to be considered redundant. See
+            ``_dna_identity_coverage()`` for why identity alone is
+            insufficient.
 
     Returns:
         A tuple of (kept_records, dropped) where dropped is a list of
-        (record, matched_representative_locus, identity) for every record
-        that was removed as redundant.
+        (record, matched_representative_locus, identity, coverage) for
+        every record that was removed as redundant.
     """
-    kept: list[PromoterRecord] = []
-    dropped: list[tuple[PromoterRecord, str, float]] = []
+    clusters: list[list[PromoterRecord]] = []
+    dropped: list[tuple[PromoterRecord, str, float, float]] = []
 
     for rec in records:
-        best_identity = 0.0
-        best_rep: PromoterRecord | None = None
-        for rep in kept:
-            identity = _dna_identity(rec.seq, rep.seq)
-            if identity > best_identity:
-                best_identity = identity
-                best_rep = rep
+        placed = False
+        for cluster in clusters:
+            comparisons = [
+                _dna_identity_coverage(rec.seq, member.seq) for member in cluster
+            ]
+            if all(
+                idn >= identity_threshold and cov >= coverage_threshold
+                for idn, cov in comparisons
+            ):
+                cluster.append(rec)
+                rep_identity, rep_coverage = comparisons[0]  # vs. the representative
+                dropped.append((rec, cluster[0].locus, rep_identity, rep_coverage))
+                placed = True
+                break
+        if not placed:
+            clusters.append([rec])
 
-        if best_rep is not None and best_identity >= threshold:
-            dropped.append((rec, best_rep.locus, best_identity))
-        else:
-            kept.append(rec)
-
+    kept = [cluster[0] for cluster in clusters]
     return kept, dropped
 
 
@@ -302,7 +410,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="target_promoter_pipeline.py",
         description=(
-            "Find true orthologs via Smith-Waterman alignment and extract "
+            "Find candidate homologs via Smith-Waterman alignment and extract "
             "their upstream regulatory regions in one automated pass."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -343,7 +451,7 @@ examples:
             "Output FASTA file path. "
             "If omitted, saves to 'targeted_promoters.fasta' in the current directory. "
             "Two TSV files are automatically generated alongside it: "
-            "<stem>.tsv (extraction results) and <stem>.hits.tsv (ortholog hits)."
+            "<stem>.tsv (extraction results) and <stem>.hits.tsv (homolog hits)."
         ),
     )
     parser.add_argument(
@@ -361,7 +469,7 @@ examples:
         metavar="FLOAT",
         help=(
             "Minimum Smith-Waterman alignment identity to report a hit (0.0-1.0). "
-            "Default: 0.35 (35%%). Increase for stricter ortholog definition."
+            "Default: 0.35 (35%%). Increase for stricter homology definition."
         ),
     )
     parser.add_argument(
@@ -422,15 +530,36 @@ examples:
         metavar="FLOAT",
         help=(
             "Collapse near-identical upstream DNA sequences before writing "
-            "output (0.0-1.0). If a promoter is >= this fraction identical "
-            "to an already-kept promoter — e.g. a recent paralog or "
-            "duplicated gene — it is dropped and logged to "
-            "<stem>.redundancy.tsv; only the best-supported representative "
-            "is kept. Recommended before motif discovery (MEME / "
-            "motif_discovery.py), since near-duplicate sequences are not "
-            "statistically independent observations and can inflate "
-            "apparent motif significance. Off by default — suggested "
-            "value: 0.90."
+            "output (0.0-1.0). A promoter is only dropped as redundant if "
+            "it ALSO clears --dedup-coverage (see that flag) — identity "
+            "alone is not sufficient, since local alignment can report "
+            "high identity over just a small shared motif block within "
+            "two otherwise-unrelated sequences. Dropped sequences are "
+            "logged to <stem>.redundancy.tsv; only the best-supported "
+            "representative is kept. Recommended before motif discovery "
+            "(MEME / motif_discovery.py), since near-duplicate sequences "
+            "are not statistically independent observations and can "
+            "inflate apparent motif significance. NOT recommended if "
+            "studying promoter evolution or paralog divergence, where the "
+            "removed sequences may be exactly the signal of interest. Off "
+            "by default — suggested value: 0.90."
+        ),
+    )
+    parser.add_argument(
+        "--dedup-coverage",
+        type=float,
+        default=0.80,
+        metavar="FLOAT",
+        help=(
+            "Minimum coverage (0.0-1.0) also required, alongside "
+            "--dedup-identity, before two promoters are considered "
+            "redundant. Coverage is the SMALLER of how much of each "
+            "sequence's own full length is covered by non-gap aligned "
+            "residues — requiring both to be substantially covered "
+            "prevents a small shared motif block (e.g. 80bp within two "
+            "1000bp promoters) from triggering deduplication on identity "
+            "alone. Only has any effect when --dedup-identity is also "
+            "set. Default: 0.80."
         ),
     )
 
@@ -463,6 +592,11 @@ def main() -> None:
             f"[!] --dedup-identity must be between 0.0 and 1.0 "
             f"(got {args.dedup_identity})."
         )
+    if not (0.0 <= args.dedup_coverage <= 1.0):
+        sys.exit(
+            f"[!] --dedup-coverage must be between 0.0 and 1.0 "
+            f"(got {args.dedup_coverage})."
+        )
 
     print("=" * 60, file=sys.stderr)
     print("  TARGETED PROMOTER PIPELINE", file=sys.stderr)
@@ -482,7 +616,7 @@ def main() -> None:
     print(f"  Organism mode   : {args.mode}", file=sys.stderr)
     print(
         f"  Dedup identity  : "
-        f"{f'{args.dedup_identity * 100:.0f}% (DNA, local alignment)' if args.dedup_identity is not None else 'OFF'}",
+        f"{f'{args.dedup_identity * 100:.0f}% identity AND {args.dedup_coverage * 100:.0f}% coverage (DNA, local alignment)' if args.dedup_identity is not None else 'OFF'}",
         file=sys.stderr,
     )
     print("=" * 60, file=sys.stderr)
@@ -509,9 +643,9 @@ def main() -> None:
 
     print(f"    {len(query_proteins)} protein(s) loaded.", file=sys.stderr)
 
-    # ── Step 2: Find orthologs via Smith-Waterman ─────────────────────────────
+    # ── Step 2: Find homologs via Smith-Waterman ──────────────────────────────
     print(
-        f"\n[Step 2] Searching for orthologs via Smith-Waterman alignment...",
+        f"\n[Step 2] Searching for homologs via Smith-Waterman alignment...",
         file=sys.stderr,
     )
 
@@ -556,13 +690,13 @@ def main() -> None:
 
     if not hits:
         sys.exit(
-            f"[!] No orthologs found above {args.identity*100:.0f}% identity / "
+            f"[!] No homologs found above {args.identity*100:.0f}% identity / "
             f"{args.coverage*100:.0f}% coverage in any reference file.\n"
             f"    Try lowering --identity or --coverage, or check your query file."
         )
 
     print(
-        f"\n    {len(hits)} total ortholog hit(s) across all reference files.",
+        f"\n    {len(hits)} total homolog hit(s) across all reference files.",
         file=sys.stderr,
     )
 
@@ -711,22 +845,25 @@ def main() -> None:
             print(f"        - {tag}", file=sys.stderr)
 
     # ── Step 4: Redundancy filter (optional) ─────────────────────────────────
-    dropped: list[tuple[PromoterRecord, str, float]] = []
+    dropped: list[tuple[PromoterRecord, str, float, float]] = []
     if args.dedup_identity is not None:
         print(
             f"\n[Step 4] Checking {extracted_count} extracted sequence(s) for "
-            f">= {args.dedup_identity * 100:.0f}% DNA identity redundancy...",
+            f">= {args.dedup_identity * 100:.0f}% DNA identity AND "
+            f">= {args.dedup_coverage * 100:.0f}% coverage redundancy...",
             file=sys.stderr,
         )
-        kept, dropped = deduplicate_promoters(extracted, args.dedup_identity)
+        kept, dropped = deduplicate_promoters(
+            extracted, args.dedup_identity, args.dedup_coverage
+        )
         print(
             f"    {len(kept)} kept, {len(dropped)} dropped as redundant.",
             file=sys.stderr,
         )
-        for rec, rep_locus, identity in dropped[:_MAX_DISPLAY]:
+        for rec, rep_locus, identity, coverage in dropped[:_MAX_DISPLAY]:
             print(
                 f"      {rec.locus:<20} -> redundant with {rep_locus} "
-                f"({identity*100:.1f}% identity)",
+                f"({identity*100:.1f}% identity, {coverage*100:.1f}% coverage)",
                 file=sys.stderr,
             )
         if len(dropped) > _MAX_DISPLAY:
@@ -779,18 +916,25 @@ def main() -> None:
 
     if dropped:
         REDUNDANCY_HEADER = "\t".join(
-            ["dropped_locus", "matched_representative_locus", "identity_pct"]
+            [
+                "dropped_locus",
+                "matched_representative_locus",
+                "identity_pct",
+                "coverage_pct",
+            ]
         )
         with open(redundancy_tsv, "w", encoding="utf-8") as rf:
             rf.write(REDUNDANCY_HEADER + "\n")
-            for rec, rep_locus, identity in dropped:
-                rf.write(f"{rec.locus}\t{rep_locus}\t{identity*100:.1f}\n")
+            for rec, rep_locus, identity, coverage in dropped:
+                rf.write(
+                    f"{rec.locus}\t{rep_locus}\t{identity*100:.1f}\t{coverage*100:.1f}\n"
+                )
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{'=' * 60}", file=sys.stderr)
     print(f"  PIPELINE COMPLETE", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
-    print(f"  Orthologs found    : {len(hits)}", file=sys.stderr)
+    print(f"  Homologs found     : {len(hits)}", file=sys.stderr)
     print(f"  Unique loci        : {len(target_loci)}", file=sys.stderr)
     print(f"  Regions extracted  : {extracted_count}", file=sys.stderr)
     if args.dedup_identity is not None:
@@ -805,8 +949,8 @@ def main() -> None:
 
     if extracted_count == 0:
         print(
-            "\n[!] WARNING: Orthologs were found but no upstream sequences were extracted.\n"
-            "    This can happen if the locus tags in the ortholog hits do not\n"
+            "\n[!] WARNING: Homologs were found but no upstream sequences were extracted.\n"
+            "    This can happen if the locus tags in the homolog hits do not\n"
             "    match the locus tags in the reference GenBank file.\n"
             "    Check that you are using the same GenBank file for both steps.",
             file=sys.stderr,
