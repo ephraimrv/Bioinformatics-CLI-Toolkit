@@ -111,6 +111,46 @@ Note:
     unique within a single contig, and fragmented draft assemblies
     routinely have many small contigs starting near position 0.
 
+    v1.8.0: Three additions found during review, none changing default
+    behavior unless their new flag is explicitly passed.
+    (1) ``--rbh`` / ``find_reciprocal_best_hits()``: this tool's own
+    "Terminology note" already warns that one-directional alignment
+    establishes homology, not orthology — in gene-family-rich genomes a
+    query often matches several paralogs, none specifically identifiable
+    as "the" ortholog from a single direction alone. RBH (query's best
+    hit, and that hit's own best hit back, are each other) is the
+    standard, considerably stronger heuristic, at roughly double the cost
+    per reference file (a full reverse search). Re-extracts the
+    reference's proteins via the same ``extract_proteins_from_gbk()``
+    pathway used for the query side specifically so both directions
+    resolve identifiers/isoforms identically — a query-side vs
+    reference-side mismatch in identifier resolution would make a
+    genuinely reciprocal pair fail to string-match across directions.
+    (2) ``--keep-all-isoforms``: the default longest-isoform-per-locus_tag
+    heuristic optimizes sequence completeness, not biological relevance —
+    a long rare transcript variant could be kept over a shorter
+    canonical/dominant isoform, with no information in most GenBank files
+    to tell the difference. When enabled, every isoform is kept with a
+    disambiguated identifier (``{locus_tag}#{protein_id}``, or
+    ``{locus_tag}#isoform{N}`` without a protein_id) stored in the
+    returned ``Protein.locus_tag``/``_RefProtein.locus_tag`` field, so
+    downstream TSV/FASTA output addresses each isoform individually
+    rather than colliding. Applied symmetrically to both query and
+    reference extraction.
+    (3) ``--min-complexity`` / ``_shannon_entropy()``: confirmed
+    empirically that two completely unrelated proteins' homopolymer
+    regions produce a k-mer Jaccard similarity of exactly 1.0 in
+    ``_passes_kmer_filter()``, passing that pre-filter at ANY identity
+    threshold up to 0.99 — low-complexity sequences defeat the k-mer
+    filter's discriminating power entirely, and (by the same local-
+    alignment locality property confirmed for DNA promoter deduplication
+    in target_promoter_pipeline.py) could in principle also produce a
+    misleadingly high reported identity between two genuinely unrelated
+    proteins. Deliberately off by default (0.0 = no filtering): some real
+    bacteriocins/RiPPs — this tool's own stated primary use case — are
+    naturally low-complexity or repetitive, so excluding them
+    unconditionally could discard genuine biology.
+
 Example:
     Bacteriocin screen with signal peptide trimming and domain-centric search::
 
@@ -131,15 +171,31 @@ Example:
 
         python3 pairwise_homolog_finder.py \\
             -q region001.gbk -r ATCC8293.gbff -o results.tsv
+
+    Reciprocal Best Hit mode for stronger orthology evidence::
+
+        python3 pairwise_homolog_finder.py \\
+            -q genome.gbff -r references/ --rbh \\
+            --coverage-mode max --identity 0.40 --min-coverage 0.75 \\
+            -o rbh_hits.tsv
+
+    Eukaryotic search keeping every splice isoform, excluding low-complexity
+    proteins::
+
+        python3 pairwise_homolog_finder.py \\
+            -q genome.gbff -r references/ \\
+            --keep-all-isoforms --min-complexity 1.0 \\
+            -o all_isoform_hits.tsv
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.7"
+__version__ = "1.8.0"
 
 import sys
 import argparse
 import csv
+import math
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
@@ -388,6 +444,57 @@ def get_args() -> argparse.Namespace:
             "every protein extracted is printed. Useful for debugging."
         ),
     )
+    parser.add_argument(
+        "--rbh",
+        action="store_true",
+        default=False,
+        help=(
+            "Reciprocal Best Hit mode: restrict results to hits where the "
+            "query's best match in the reference, AND that reference "
+            "protein's own best match back in the query, are each other. "
+            "Considerably stronger evidence for orthology than a "
+            "one-directional hit alone (see the module docstring's "
+            "'Terminology note'), at roughly double the cost per reference "
+            "file (a full reverse search is also run). Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--keep-all-isoforms",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep every splice isoform instead of only the longest per "
+            "locus_tag (the default). The longest-isoform heuristic "
+            "optimizes sequence completeness, not biological relevance — "
+            "a long rare transcript variant could be kept over a shorter "
+            "canonical/dominant one, with no way for the heuristic to "
+            "know the difference. Each isoform gets a disambiguated "
+            "identifier ({locus_tag}#{protein_id}, or "
+            "{locus_tag}#isoformN without a protein_id). Increases the "
+            "number of comparisons accordingly — fine for a handful of "
+            "isoforms per locus, more expensive at whole-genome scale."
+        ),
+    )
+    parser.add_argument(
+        "--min-complexity",
+        type=float,
+        default=0.0,
+        metavar="BITS",
+        help=(
+            "Exclude candidate proteins (query and reference) whose "
+            "comparison sequence falls below this Shannon-entropy "
+            "threshold (bits, range 0.0-~4.32). Default: 0.0 (no "
+            "filtering). Confirmed empirically that low-complexity "
+            "regions (e.g. homopolymer runs) can produce a k-mer Jaccard "
+            "similarity of 1.0 between two genuinely unrelated proteins, "
+            "defeating the k-mer pre-filter regardless of identity "
+            "threshold. Deliberately off by default: some real "
+            "bacteriocins/RiPPs are naturally low-complexity, and "
+            "excluding them unconditionally could discard genuine "
+            "biology — enable this only for searches where that isn't "
+            "a concern (e.g. whole-proteome homology screening)."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -478,30 +585,63 @@ def extract_proteins_from_gbk(
     min_length: int = 10,
     max_length: int | None = None,
     verbose: bool = False,
+    keep_all_isoforms: bool = False,
+    min_complexity: float = 0.0,
 ) -> list[Protein]:
-    """Reads a GBK/GBFF file and returns the longest CDS per locus_tag.
+    """Reads a GBK/GBFF file and returns proteins, one per locus_tag by default.
 
     On a eukaryotic file, multiple CDS features (alternative splice
-    isoforms) commonly share the same /locus_tag. Only the longest
-    full-length translation per locus_tag is kept — see the module
+    isoforms) commonly share the same /locus_tag. By default, only the
+    longest full-length translation per locus_tag is kept — see the module
     docstring's "ISOFORM HANDLING" section. On a prokaryotic file this is
     a no-op, since each locus_tag already has exactly one CDS.
 
+    KEEP_ALL_ISOFORMS (v1.8.0): the longest-isoform heuristic optimizes
+    sequence completeness, not biological relevance — a 1500aa rare
+    transcript variant would be kept over an 800aa transcript that is
+    actually the canonical/dominant/experimentally-validated isoform, with
+    no way for this heuristic to know the difference (most GenBank files
+    don't carry that information at all). When ``keep_all_isoforms=True``,
+    every isoform is kept instead of just the longest, each given a
+    disambiguated identifier — ``{locus_tag}#{protein_id}`` when
+    ``/protein_id`` is present, else ``{locus_tag}#isoform{N}`` — stored in
+    the returned ``Protein.locus_tag`` field, so all downstream code (TSV
+    output, FASTA headers) sees a unique, addressable identifier per
+    isoform rather than a collision. Trade-off: this multiplies the
+    number of proteins compared against each reference protein
+    accordingly — fine for one locus's handful of isoforms, more
+    expensive at whole-eukaryotic-genome scale.
+
+    MIN_COMPLEXITY (v1.8.0): optionally excludes candidates whose
+    comparison sequence (mature core if ``apply_mature``, else the full
+    sequence) falls below a Shannon-entropy threshold — see
+    ``_shannon_entropy()`` for why low-complexity sequences can defeat the
+    k-mer pre-filter and risk a misleadingly high reported identity to an
+    otherwise-unrelated protein. Off by default (0.0 = no filtering).
+
     Args:
-        gbk_path:     Path to the query GBK/GBFF file.
-        apply_mature: If ``True``, applies ``calculate_mature_core()`` to each protein.
-        min_length:   Skip proteins shorter than this.
-        max_length:   Skip proteins longer than this (``None`` = no limit).
-        verbose:      If ``True``, print details for each protein retained.
+        gbk_path:          Path to the query GBK/GBFF file.
+        apply_mature:      If ``True``, applies ``calculate_mature_core()`` to each protein.
+        min_length:        Skip proteins shorter than this.
+        max_length:        Skip proteins longer than this (``None`` = no limit).
+        verbose:           If ``True``, print details for each protein retained.
+        keep_all_isoforms: If ``True``, keep every isoform instead of only
+                           the longest per locus_tag (see above).
+        min_complexity:    Minimum Shannon entropy (bits, 0.0-~4.32) the
+                           comparison sequence must have. Default 0.0 (no
+                           filtering).
 
     Returns:
-        List of ``Protein`` objects, one per distinct resolved identifier
-        (locus_tag, or a safe fallback — see ``_resolve_identifier()``).
+        List of ``Protein`` objects. One per distinct resolved identifier
+        (locus_tag, or a safe fallback — see ``_resolve_identifier()``) by
+        default; one per individual isoform when ``keep_all_isoforms=True``.
     """
     print(f"\n[*] Extracting proteins from query: {gbk_path.name}", file=sys.stderr)
 
     locus_best: dict[str, Protein] = {}
+    isoform_counters: dict[str, int] = {}
     skipped_zero_length = 0
+    skipped_low_complexity = 0
     total_candidates = 0
 
     for record in SeqIO.parse(gbk_path, "genbank"):
@@ -532,22 +672,43 @@ def extract_proteins_from_gbk(
                 skipped_zero_length += 1
                 continue
 
-            existing = locus_best.get(locus_tag)
-            if existing is not None and existing.length >= full_length:
-                continue  # Already holding an equal-or-longer isoform for this locus
+            cmp_seq = mature_seq if apply_mature else translation
+            if min_complexity > 0.0 and _shannon_entropy(cmp_seq) < min_complexity:
+                skipped_low_complexity += 1
+                continue
 
-            locus_best[locus_tag] = Protein(
-                locus_tag=locus_tag,
-                product=product,
-                sequence=translation,
-                mature_sequence=mature_seq,
-                source_file=gbk_path.name,
-                length=full_length,
-            )
+            if keep_all_isoforms:
+                protein_id = feature.qualifiers.get("protein_id", [""])[0]
+                if protein_id:
+                    key = f"{locus_tag}#{protein_id}"
+                else:
+                    isoform_counters[locus_tag] = isoform_counters.get(locus_tag, 0) + 1
+                    key = f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
+                locus_best[key] = Protein(
+                    locus_tag=key,
+                    product=product,
+                    sequence=translation,
+                    mature_sequence=mature_seq,
+                    source_file=gbk_path.name,
+                    length=full_length,
+                )
+            else:
+                existing = locus_best.get(locus_tag)
+                if existing is not None and existing.length >= full_length:
+                    continue  # Already holding an equal-or-longer isoform for this locus
+
+                locus_best[locus_tag] = Protein(
+                    locus_tag=locus_tag,
+                    product=product,
+                    sequence=translation,
+                    mature_sequence=mature_seq,
+                    source_file=gbk_path.name,
+                    length=full_length,
+                )
 
     proteins = list(locus_best.values())
 
-    if total_candidates > len(proteins):
+    if not keep_all_isoforms and total_candidates > len(proteins):
         print(
             f"  [{total_candidates - len(proteins)} isoform(s) collapsed — "
             f"kept the longest CDS per locus_tag]",
@@ -557,6 +718,12 @@ def extract_proteins_from_gbk(
         print(
             f"  [{skipped_zero_length} candidate isoform(s) skipped due to "
             f"zero-length mature core]",
+            file=sys.stderr,
+        )
+    if skipped_low_complexity > 0:
+        print(
+            f"  [{skipped_low_complexity} candidate(s) skipped: below "
+            f"--min-complexity {min_complexity:.2f} bits]",
             file=sys.stderr,
         )
 
@@ -596,6 +763,47 @@ def _build_kmers(seq: str, k: int = _K) -> frozenset[str]:
     if len(seq) < k:
         return frozenset()
     return frozenset(seq[i : i + k] for i in range(len(seq) - k + 1))
+
+
+def _shannon_entropy(seq: str) -> float:
+    """Computes the Shannon entropy (bits) of a protein sequence's amino-acid
+    composition.
+
+    Range is [0.0, ~4.32] (log2(20), the maximum for a 20-letter alphabet).
+    A homopolymer run (e.g. ``'AAAAAA...'``) has entropy 0.0.
+
+    Used by the optional ``--min-complexity`` filter (v1.8.0). Confirmed
+    empirically: two completely unrelated proteins' homopolymer regions
+    produce a k-mer Jaccard similarity of exactly 1.0 in ``_passes_kmer_filter()``,
+    passing that pre-filter at ANY identity threshold up to 0.99 — the
+    k-mer filter provides zero discriminating power for sufficiently
+    low-complexity sequences, and a long enough shared low-complexity
+    stretch could in principle also pass the score filter and full
+    alignment, reporting a misleadingly high identity between two
+    genuinely unrelated proteins (the same fundamental property of local
+    alignment confirmed for DNA promoter deduplication in
+    target_promoter_pipeline.py).
+
+    Deliberately NOT applied by default: some real bacteriocins/RiPPs
+    (this tool's own primary stated use case) are naturally low-complexity
+    or repetitive (e.g. glycine-rich regions, simple repeat motifs), so
+    excluding low-entropy sequences unconditionally could discard genuine
+    biology. ``--min-complexity`` is opt-in for searches where this isn't
+    a concern (e.g. whole-proteome homology screening).
+
+    Args:
+        seq: Amino acid sequence to score.
+
+    Returns:
+        Entropy in bits. Returns 0.0 for an empty sequence.
+    """
+    if not seq:
+        return 0.0
+    length = len(seq)
+    counts: dict[str, int] = {}
+    for ch in seq:
+        counts[ch] = counts.get(ch, 0) + 1
+    return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
 def _passes_kmer_filter(
@@ -767,8 +975,10 @@ def calculate_identity(seq_a: str, seq_b: str) -> tuple[float, int, int, int, in
 def _load_reference_proteins(
     ref_path: Path,
     use_mature: bool = False,
+    keep_all_isoforms: bool = False,
+    min_complexity: float = 0.0,
 ) -> list[_RefProtein]:
-    """Loads the longest-isoform CDS protein per locus_tag from a reference file.
+    """Loads CDS proteins from a reference file, one per locus_tag by default.
 
     The comparison sequence (``cmp_seq``) and its k-mers are computed here,
     once per protein, BEFORE the inner query loop runs.  This means mature
@@ -776,9 +986,13 @@ def _load_reference_proteins(
     regardless of how many query proteins are being compared.
 
     On a eukaryotic reference, multiple CDS features (splice isoforms)
-    commonly share the same /locus_tag; only the longest full-length
-    translation per locus_tag is kept (see module docstring, "ISOFORM
-    HANDLING"). On a prokaryotic reference this is a no-op.
+    commonly share the same /locus_tag; by default only the longest
+    full-length translation per locus_tag is kept (see module docstring,
+    "ISOFORM HANDLING"). On a prokaryotic reference this is a no-op.
+
+    See ``extract_proteins_from_gbk()``'s docstring for ``keep_all_isoforms``
+    and ``min_complexity`` — both behave identically here, on the reference
+    side, for symmetry with the query side.
 
     If ``use_mature=True`` and a candidate's mature core becomes zero-length
     (e.g. the signal peptide is longer than the entire protein), the
@@ -786,17 +1000,24 @@ def _load_reference_proteins(
     transparency about what the script did with your data.
 
     Args:
-        ref_path:   Path to the reference GBK/GBFF file.
-        use_mature: If ``True``, applies ``calculate_mature_core()`` to each
-                    protein so that ``cmp_seq`` is the trimmed mature core.
+        ref_path:          Path to the reference GBK/GBFF file.
+        use_mature:        If ``True``, applies ``calculate_mature_core()`` to each
+                           protein so that ``cmp_seq`` is the trimmed mature core.
+        keep_all_isoforms: If ``True``, keep every isoform instead of only
+                           the longest per locus_tag.
+        min_complexity:    Minimum Shannon entropy (bits) the comparison
+                           sequence must have. Default 0.0 (no filtering).
 
     Returns:
         List of ``_RefProtein`` objects, one per distinct resolved
         identifier (locus_tag, or a safe fallback — see
-        ``_resolve_identifier()``), with pre-computed comparison data.
+        ``_resolve_identifier()``) by default; one per individual isoform
+        when ``keep_all_isoforms=True``, with pre-computed comparison data.
     """
     locus_best: dict[str, _RefProtein] = {}
+    isoform_counters: dict[str, int] = {}
     skipped_zero_length = 0
+    skipped_low_complexity = 0
     total_candidates = 0
 
     for record in SeqIO.parse(ref_path, "genbank"):
@@ -829,23 +1050,44 @@ def _load_reference_proteins(
                 skipped_zero_length += 1
                 continue
 
-            existing = locus_best.get(locus_tag)
-            if existing is not None and existing.full_length >= full_length:
-                continue  # Already holding an equal-or-longer isoform
+            if min_complexity > 0.0 and _shannon_entropy(cmp_seq) < min_complexity:
+                skipped_low_complexity += 1
+                continue
 
-            locus_best[locus_tag] = _RefProtein(
-                locus_tag=locus_tag,
-                product=feature.qualifiers.get("product", ["Unknown product"])[0],
-                sequence=translation,
-                cmp_seq=cmp_seq,
-                kmers=_build_kmers(cmp_seq),
-                length=len(cmp_seq),
-                full_length=full_length,
-            )
+            if keep_all_isoforms:
+                protein_id = feature.qualifiers.get("protein_id", [""])[0]
+                if protein_id:
+                    key = f"{locus_tag}#{protein_id}"
+                else:
+                    isoform_counters[locus_tag] = isoform_counters.get(locus_tag, 0) + 1
+                    key = f"{locus_tag}#isoform{isoform_counters[locus_tag]}"
+                locus_best[key] = _RefProtein(
+                    locus_tag=key,
+                    product=feature.qualifiers.get("product", ["Unknown product"])[0],
+                    sequence=translation,
+                    cmp_seq=cmp_seq,
+                    kmers=_build_kmers(cmp_seq),
+                    length=len(cmp_seq),
+                    full_length=full_length,
+                )
+            else:
+                existing = locus_best.get(locus_tag)
+                if existing is not None and existing.full_length >= full_length:
+                    continue  # Already holding an equal-or-longer isoform
+
+                locus_best[locus_tag] = _RefProtein(
+                    locus_tag=locus_tag,
+                    product=feature.qualifiers.get("product", ["Unknown product"])[0],
+                    sequence=translation,
+                    cmp_seq=cmp_seq,
+                    kmers=_build_kmers(cmp_seq),
+                    length=len(cmp_seq),
+                    full_length=full_length,
+                )
 
     proteins = list(locus_best.values())
 
-    if total_candidates > len(proteins):
+    if not keep_all_isoforms and total_candidates > len(proteins):
         collapse_msg = (
             f"  [{total_candidates - len(proteins)} isoform(s) collapsed — "
             f"kept the longest CDS per locus_tag]"
@@ -863,6 +1105,16 @@ def _load_reference_proteins(
         else:
             print(summary_msg, file=sys.stderr)
 
+    if skipped_low_complexity > 0:
+        complexity_msg = (
+            f"  [{skipped_low_complexity} protein(s) skipped: below "
+            f"--min-complexity {min_complexity:.2f} bits]"
+        )
+        if HAS_TQDM:
+            tqdm.write(complexity_msg, file=sys.stderr)
+        else:
+            print(complexity_msg, file=sys.stderr)
+
     return proteins
 
 
@@ -876,6 +1128,8 @@ def find_homologs(
     use_mature: bool,
     min_coverage: float = 0.50,
     coverage_mode: str = "min",
+    keep_all_isoforms: bool = False,
+    min_complexity: float = 0.0,
 ) -> list[HomologHit]:
     """Compares query proteins against all CDS in a reference file.
 
@@ -895,6 +1149,10 @@ def find_homologs(
                         sequence (correct for whole-protein homolog search).
                         When ``'max'``, the length ratio pre-filter is also
                         enforced to reject size-mismatched pairs early.
+        keep_all_isoforms: Passed through to ``_load_reference_proteins()`` —
+                        see ``extract_proteins_from_gbk()``'s docstring.
+        min_complexity: Passed through to ``_load_reference_proteins()`` —
+                        see ``_shannon_entropy()``.
         verbose:        If ``True``, print details during processing.
 
     Returns:
@@ -905,7 +1163,12 @@ def find_homologs(
     # Load reference proteins with cmp_seq and k-mers pre-computed.
     # calculate_mature_core() and _build_kmers() are called here ONCE per
     # reference protein — never again inside the nested query loop below.
-    ref_proteins = _load_reference_proteins(ref_path, use_mature=use_mature)
+    ref_proteins = _load_reference_proteins(
+        ref_path,
+        use_mature=use_mature,
+        keep_all_isoforms=keep_all_isoforms,
+        min_complexity=min_complexity,
+    )
     if not ref_proteins:
         return hits
 
@@ -988,8 +1251,136 @@ def find_homologs(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 7: PRETTY PRINT TABLE
+# STEP 6b: RECIPROCAL BEST HIT (RBH) MODE
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def find_reciprocal_best_hits(
+    query_proteins: list[Protein],
+    query_path: Path,
+    ref_path: Path,
+    min_identity: float,
+    use_mature: bool,
+    min_coverage: float = 0.50,
+    coverage_mode: str = "min",
+    keep_all_isoforms: bool = False,
+    min_complexity: float = 0.0,
+) -> list[HomologHit]:
+    """Restricts forward hits to Reciprocal Best Hits (RBH) only.
+
+    WHY (v1.8.0): this tool's own "Terminology note" already warns that
+    pairwise alignment establishes homology, not orthology — a query will
+    often match several paralogs above threshold in a gene-family-rich
+    genome, none of them specifically identifiable as "the" ortholog from
+    one-directional search alone. RBH is the standard, much stronger
+    evidence: a query's best hit in the reference, AND that reference
+    protein's best hit back in the query, must be each other. This doesn't
+    formally prove orthology (RBH can still be fooled by differential gene
+    loss or fast-evolving paralogs), but it is the conventional first-line
+    heuristic real orthology-inference tools use, and is considerably
+    stronger evidence than a one-directional best/any hit.
+
+    METHOD: runs the forward search exactly as ``find_homologs()`` would
+    (query_proteins against ref_path), then runs a SEPARATE reverse search
+    — reference proteins (re-extracted via ``extract_proteins_from_gbk()``,
+    the same pathway used for the query, so both directions resolve
+    identifiers and isoforms identically) treated as the "query" against
+    ``query_path`` as the "reference". For each forward hit, keeps it only
+    if: (1) it is the best (highest-identity) forward hit for its query
+    locus, AND (2) the matched reference locus's own best reverse hit
+    points back to that same query locus.
+
+    COST: this roughly doubles the work for this reference file specifically
+    (a full second alignment pass in the opposite direction), since RBH
+    requires actually knowing each reference protein's best hit, not just
+    each query protein's. Only meaningfully more expensive when ``--rbh``
+    is explicitly requested; default behavior (``find_homologs()`` alone)
+    is completely unaffected.
+
+    Args:
+        query_proteins: ``Protein`` objects from the query GBK (forward
+                        direction; already extracted by the caller).
+        query_path:     Path to the query GBK file (needed to re-run the
+                        reverse search with reference proteins as "query").
+        ref_path:       Path to the reference file.
+        min_identity:   Minimum identity (0.0–1.0) to report a hit, applied
+                        identically in both directions.
+        use_mature:     If ``True``, uses mature sequences for comparison.
+        min_coverage:   Minimum alignment coverage fraction.
+        coverage_mode:  ``'min'`` or ``'max'`` — see ``find_homologs()``.
+        keep_all_isoforms: Passed through to both directions' extraction.
+        min_complexity: Passed through to both directions' extraction.
+
+    Returns:
+        The subset of forward ``HomologHit`` objects that are reciprocal
+        best hits. Always a subset of what ``find_homologs()`` alone would
+        return for the same parameters.
+    """
+    forward_hits = find_homologs(
+        query_proteins=query_proteins,
+        ref_path=ref_path,
+        min_identity=min_identity,
+        use_mature=use_mature,
+        min_coverage=min_coverage,
+        coverage_mode=coverage_mode,
+        keep_all_isoforms=keep_all_isoforms,
+        min_complexity=min_complexity,
+    )
+    if not forward_hits:
+        return []
+
+    # Best forward hit per query locus (highest identity).
+    best_forward: dict[str, HomologHit] = {}
+    for hit in forward_hits:
+        current = best_forward.get(hit.query_locus)
+        if current is None or hit.identity > current.identity:
+            best_forward[hit.query_locus] = hit
+
+    # Reverse search: extract the REFERENCE file's proteins via the exact
+    # same pathway as the query side, then search them against the query
+    # file (now playing the role of "reference"). Using the same extraction
+    # function for both directions matters: if the two directions resolved
+    # identifiers or isoforms differently, an RBH check comparing locus
+    # tags across directions could never agree even for a genuine
+    # reciprocal pair.
+    reverse_query_proteins = extract_proteins_from_gbk(
+        gbk_path=ref_path,
+        apply_mature=use_mature,
+        min_length=1,
+        max_length=None,
+        verbose=False,
+        keep_all_isoforms=keep_all_isoforms,
+        min_complexity=min_complexity,
+    )
+    reverse_hits = find_homologs(
+        query_proteins=reverse_query_proteins,
+        ref_path=query_path,
+        min_identity=min_identity,
+        use_mature=use_mature,
+        min_coverage=min_coverage,
+        coverage_mode=coverage_mode,
+        keep_all_isoforms=keep_all_isoforms,
+        min_complexity=min_complexity,
+    )
+
+    # In reverse_hits, "query_locus" is actually a REFERENCE locus (from
+    # ref_path) and "ref_locus" is actually a QUERY locus (from query_path)
+    # — those are just whichever role each protein played in this
+    # particular find_homologs() call.
+    best_reverse: dict[str, HomologHit] = {}
+    for hit in reverse_hits:
+        current = best_reverse.get(hit.query_locus)
+        if current is None or hit.identity > current.identity:
+            best_reverse[hit.query_locus] = hit
+
+    rbh_hits: list[HomologHit] = []
+    for query_locus, fwd_hit in best_forward.items():
+        ref_locus = fwd_hit.ref_locus
+        rev_hit = best_reverse.get(ref_locus)
+        if rev_hit is not None and rev_hit.ref_locus == query_locus:
+            rbh_hits.append(fwd_hit)
+
+    return rbh_hits
 
 
 def print_hits_table(hits: list[HomologHit]) -> None:
@@ -1208,6 +1599,12 @@ def write_log_file(
         cmd_parts.append(f"--max-length {args.max_length}")
     if args.min_length != 10:
         cmd_parts.append(f"--min-length {args.min_length}")
+    if args.rbh:
+        cmd_parts.append("--rbh")
+    if args.keep_all_isoforms:
+        cmd_parts.append("--keep-all-isoforms")
+    if args.min_complexity > 0.0:
+        cmd_parts.append(f"--min-complexity {args.min_complexity}")
     if args.output:
         cmd_parts.append(f"-o {shlex.quote(str(args.output))}")
     if args.output_fasta:
@@ -1254,6 +1651,12 @@ def write_log_file(
         log.write(f"  Min Query Length     : {args.min_length} aa\n")
         if args.max_length:
             log.write(f"  Max Query Length     : {args.max_length} aa\n")
+        log.write(f"  RBH Mode             : {'YES' if args.rbh else 'NO'}\n")
+        log.write(
+            f"  Keep All Isoforms    : {'YES' if args.keep_all_isoforms else 'NO'}\n"
+        )
+        if args.min_complexity > 0.0:
+            log.write(f"  Min Complexity       : {args.min_complexity:.2f} bits\n")
         log.write("\n")
 
         # Query information
@@ -1350,6 +1753,18 @@ def main() -> None:
     )
     if args.max_length:
         print(f"  Max length   : {args.max_length} aa", file=sys.stderr)
+    print(
+        f"  RBH mode     : {'YES — reciprocal best hits only' if args.rbh else 'NO'}",
+        file=sys.stderr,
+    )
+    if args.keep_all_isoforms:
+        print(f"  Isoforms     : ALL kept (not just longest)", file=sys.stderr)
+    if args.min_complexity > 0.0:
+        print(
+            f"  Min complexity: {args.min_complexity:.2f} bits "
+            f"(low-complexity proteins excluded)",
+            file=sys.stderr,
+        )
     print("=" * 100, file=sys.stderr)
 
     try:
@@ -1359,6 +1774,8 @@ def main() -> None:
             min_length=args.min_length,
             max_length=args.max_length,
             verbose=args.verbose,
+            keep_all_isoforms=args.keep_all_isoforms,
+            min_complexity=args.min_complexity,
         )
         if not query_proteins:
             sys.exit("[!] No proteins extracted from query. Check the file.")
@@ -1383,18 +1800,34 @@ def main() -> None:
                     f"[*] Scanning {ref_file.name} ...",
                     file=sys.stderr,
                 )
-            file_hits = find_homologs(
-                query_proteins=query_proteins,
-                ref_path=ref_file,
-                min_identity=args.identity,
-                use_mature=args.mature,
-                min_coverage=args.min_coverage,
-                coverage_mode=args.coverage_mode,
-            )
+            if args.rbh:
+                file_hits = find_reciprocal_best_hits(
+                    query_proteins=query_proteins,
+                    query_path=args.query,
+                    ref_path=ref_file,
+                    min_identity=args.identity,
+                    use_mature=args.mature,
+                    min_coverage=args.min_coverage,
+                    coverage_mode=args.coverage_mode,
+                    keep_all_isoforms=args.keep_all_isoforms,
+                    min_complexity=args.min_complexity,
+                )
+            else:
+                file_hits = find_homologs(
+                    query_proteins=query_proteins,
+                    ref_path=ref_file,
+                    min_identity=args.identity,
+                    use_mature=args.mature,
+                    min_coverage=args.min_coverage,
+                    coverage_mode=args.coverage_mode,
+                    keep_all_isoforms=args.keep_all_isoforms,
+                    min_complexity=args.min_complexity,
+                )
             # Only print results summary if verbose
             if args.verbose:
+                hit_kind = "RBH" if args.rbh else "hit(s)"
                 print(
-                    f"      \u2192 {len(file_hits)} hit(s) above "
+                    f"      \u2192 {len(file_hits)} {hit_kind} above "
                     f"{args.identity*100:.0f}% identity / "
                     f"{args.min_coverage*100:.0f}% coverage ({args.coverage_mode})",
                     file=sys.stderr,
