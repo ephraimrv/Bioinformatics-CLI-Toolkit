@@ -173,15 +173,15 @@ Note:
     entirely, instead of being forced to contribute a full unit of OOPS
     "occurrence" probability built from noise. Applied uniformly from
     seed scoring onward (not held back to full EM only — an earlier
-    design that did so was empirically disproven: pure-OOPS quick EM
+    design that did so didn't hold up: pure-OOPS quick EM
     still let decoys soften the PWM into a starting point full EM
     couldn't escape).
     (2) ``--zoops-no-calibrate``/``--zoops-seed``: by default, the flat
     threshold is auto-raised per round via permutation calibration
     (shuffle sequences, score against the current PWM, take the 95th
     percentile of the resulting noise distribution). A flat threshold
-    alone does not scale with sequence length: pure noise was confirmed
-    to clear a flat 0.0 floor 90% of the time on realistic-length
+    alone does not scale with sequence length: pure noise clears
+    a flat 0.0 floor 90% of the time on realistic-length
     sequences, since longer sequences offer more candidate windows for
     noise to spuriously exceed any fixed bar by chance.
     (3) Reported instances are tagged low-confidence when they don't
@@ -810,7 +810,7 @@ def _calibrate_zoops_threshold(
     windows a sequence actually offers: a 200bp sequence gives a width-15
     PWM roughly 372 chances (186 positions x 2 strands) to find SOME
     window that happens to score well purely by chance, even with no real
-    site present. Confirmed empirically: pure-random 85bp sequences
+    site present. Pure-random 85bp sequences
     (81 positions x 2 strands = 162 chances) cleared a flat 0.0 threshold
     90% of the time against a realistic PWM. A fixed threshold tuned for
     short sequences is therefore not just imprecise but actively
@@ -934,7 +934,7 @@ def discover_motifs(
     lacking the motif), softening the PWM it hands to full EM into a
     starting point where decoys already clear the threshold at iteration
     1 — a stable bad equilibrium that full EM's local optimization cannot
-    escape on its own (confirmed empirically: a decoy scoring -6.5
+    escape on its own (a decoy scoring -6.5
     against a from-scratch ZOOPS-protected PWM still scored +3.6 against
     the same dataset's pure-OOPS-quick-EM result, and stayed there through
     200 more ZOOPS-lite full-EM iterations). Applying the threshold from
@@ -972,7 +972,7 @@ def discover_motifs(
                           threshold per round via permutation calibration
                           — see ``_calibrate_zoops_threshold``. A flat
                           threshold alone does not scale with sequence
-                          length (confirmed empirically: pure noise
+                          length (pure noise
                           cleared a flat 0.0 floor 90% of the time on
                           realistic-length sequences), so this is on by
                           default. ``zoops_threshold`` still acts as a
@@ -1081,14 +1081,14 @@ def discover_motifs(
         #
         # Quick EM uses the FLAT floor here, not a calibrated one.
         # Calibrating against the raw single-kmer seed PWM was tried and
-        # confirmed counterproductive: an unrefined PWM (pseudocount
+        # turned out counterproductive: an unrefined PWM (pseudocount
         # smoothing only, ~0.79 vs ~0.07 per base) is not yet sharp enough
         # to separate true sites from noise AT ALL, so a calibrated
         # "noise ceiling" against it lands right on top of a true site's
         # own achievable score, rejecting real sites during quick EM
         # before they ever get a chance to refine the PWM. The flat floor
         # is lenient enough to admit real sites while still rejecting
-        # clearly-negative noise (as confirmed in the original direct
+        # clearly-negative noise (see the original direct
         # test above). Calibration is deferred to full EM (below), once
         # quick EM has had a chance to actually sharpen the PWM.
         quick_results: list[tuple[float, dict]] = []
@@ -1114,7 +1114,7 @@ def discover_motifs(
         # Calibrated here (not before quick EM) against the best
         # quick-EM-refined PWM, which by now is sharp enough for the
         # noise-vs-signal separation to be statistically meaningful —
-        # confirmed empirically: real sites scored 12.7 against a
+        # real sites scored 12.7 against a
         # quick-EM-refined PWM with the calibrated threshold landing at
         # 4.3, comfortably between the true signal and the decoy scores
         # (-7.1 to 4.4).
@@ -1339,7 +1339,7 @@ def main() -> None:
             "Use --zoops-threshold as a flat, literal value with no "
             "per-dataset auto-calibration. Calibration is on by default "
             "because a flat threshold does not scale with sequence length "
-            "— pure noise was confirmed to clear a flat 0.0 floor 90%% of "
+            "— pure noise clears a flat 0.0 floor 90%% of "
             "the time on realistic-length sequences, since longer "
             "sequences offer more candidate windows for noise to "
             "spuriously exceed any fixed bar by chance. Only disable this "

@@ -91,8 +91,6 @@ Output Format Reference:
     ``--gene-fna FILE.fna``  Gene DNA FASTA (one entry per non-truncated CDS)
     ``--gbk FILE.gbk``       Annotated GenBank with local coordinates
 
-License: MIT
-
 Note:
     This module is part of ongoing research and is associated with an upcoming
     publication. Please cite appropriately when used in derivative works.

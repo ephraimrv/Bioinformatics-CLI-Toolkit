@@ -1,5 +1,8 @@
-r"""
-Remote BLAST Runner
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jan Ephraim R. Vallente
+
+r"""Remote BLAST Runner
 
 Automates NCBI remote BLAST searches over sequences in a FASTA file.
 Handles three sequence selection modes, writes TSV output with column
@@ -195,8 +198,6 @@ SEQUENCE-TYPE CHECK:
     does not block the run, since short sequences can occasionally trip a
     false positive.
 
-License: MIT
-
 Reproducibility:
     Associated with upcoming research (manuscript in preparation).
     Correct attribution is requested when used in derivative works.
@@ -313,11 +314,18 @@ v1.6.0 changes: -i now accepts multiple files and/or directories instead
     per-ID progress tracking — see MULTI-GENOME INPUT above. -o is now
     required when multiple sources are given. Single-file input behavior
     is completely unchanged.
+
+v1.6.1 changes: Added the missing shebang/SPDX-license/copyright header
+    that every other script in this toolkit carries at the very top of
+    the file — this one had skipped straight to the module docstring.
+    Also removed the now-redundant inline "License: MIT" line from the
+    docstring body, since the SPDX header covers it. Documentation only;
+    no behavior change.
 """
 
 __author__ = "Jan Ephraim R. Vallente"
 __email__ = "ephrvallente@gmail.com"
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 import argparse
 import contextlib

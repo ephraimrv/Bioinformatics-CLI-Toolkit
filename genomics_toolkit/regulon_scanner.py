@@ -95,14 +95,14 @@ Note:
     "IUPAC/regex motif" support and had the identical bug.
     (1) Raw IUPAC ambiguity codes (W, R, Y, S, K, M, B, D, H, V, N) were
     passed directly to re.compile(), which has no concept of them —
-    confirmed empirically that "TATAWAW" matched zero times against a
+    "TATAWAW" matched zero times against a
     sequence containing the valid instance "TATAAAA". Now translated via
     utils.translate_iupac_to_regex() before compiling.
     (2) A second, independent bug was found layered on top of the first:
     _motif_pvalue() already correctly handles explicit "[TC]"-style
     bracket notation, but did not recognize raw IUPAC letters at all —
     it fell through to its "complex token, no constraint" branch for
-    them. Confirmed empirically: the same motif spelled "TATAWAW" vs
+    them. The same motif spelled "TATAWAW" vs
     "TATA[AT]A[AT]" produced two different p-values (0.0024 vs 0.00088)
     purely from spelling, with the raw-IUPAC spelling understating
     significance. Fixed by translating the motif ONCE in main() and using
@@ -375,7 +375,7 @@ def stream_regulon_hits(
                         ``utils.translate_iupac_to_regex()`` before
                         compiling — raw codes passed directly to
                         ``re.compile()`` are matched as literal characters
-                        and never match real DNA, confirmed empirically
+                        and never match real DNA
                         (e.g. "TATAWAW" found zero hits against a sequence
                         containing the valid instance "TATAAAA").
                         Matching is case-insensitive
@@ -544,7 +544,7 @@ def main() -> None:
     # "[TC]"-style character classes, but does NOT recognize raw IUPAC
     # letters (W, R, Y, ...) — it falls through to its "complex token, no
     # constraint" branch for them, silently treating an ambiguous position
-    # as if it could be ANY base for free. Confirmed empirically: the same
+    # as if it could be ANY base for free. The same
     # biological motif spelled as "TATAWAW" vs "TATA[AT]A[AT]" produced two
     # different p-values (0.0024 vs 0.00088) purely from spelling, with the
     # raw-IUPAC spelling UNDERSTATING significance. Translating once here,
