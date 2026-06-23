@@ -61,13 +61,13 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
-    v1.3.0: Fixed one bug found while auditing this script against its
+    v1.3.0: Fixed one bug, after comparing this script against its
     sibling, conserved_annotation_scanner.py, which had already fixed
     the identical issue independently (v1.3.0 there). The Tier-2 sort
     key ("Total physical copies") summed raw CDS hit count per genome
     rather than distinct locus_tag count. Eukaryotic GenBank annotations
     represent alternative splice isoforms as separate CDS features
-    sharing one locus_tag — confirmed empirically that a gene with 3
+    sharing one locus_tag — a gene with 3
     annotated isoforms all matching a keyword in one genome, plus one
     normal single-copy match in a second genome, reported "4 total
     physical copies" when both genomes actually have exactly 1 physical
@@ -355,8 +355,7 @@ def main() -> None:
             key=lambda item: (
                 -len(item[1]),
                 -sum(
-                    len({hit["locus_tag"] for hit in hits})
-                    for hits in item[1].values()
+                    len({hit["locus_tag"] for hit in hits}) for hits in item[1].values()
                 ),
                 item[0].lower(),
             ),

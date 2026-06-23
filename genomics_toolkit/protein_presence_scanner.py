@@ -239,7 +239,7 @@ def _scan_and_report(
 
     Each file's scan is wrapped in its own try/except so that one
     unreadable or malformed reference file does not abort the scan for
-    every other file in the batch — confirmed empirically that, before
+    every other file in the batch — before
     this fix, scan_for_peptide()'s re-raised ValueError on a single bad
     file propagated out of the per-file loop entirely, silently
     truncating the matrix for every file after the one that failed, with

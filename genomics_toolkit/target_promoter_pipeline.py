@@ -107,7 +107,7 @@ Note:
     preparation). Correct attribution is requested when used in
     derivative works.
 
-    v1.5.0: Fixed two confirmed bugs and one terminology inconsistency
+    v1.5.0: Fixed two bugs and one terminology inconsistency
     found during review.
     (1) TERMINOLOGY: this script's own docstring and runtime output said
     "ortholog"/"orthologs" in 7 places, despite importing a function
@@ -119,7 +119,7 @@ Note:
     homolog," consistent with the script it wraps.
     (2) REDUNDANCY FILTER, IDENTITY ALONE IS NOT ENOUGH: ``deduplicate_promoters()``
     previously dropped a promoter as "redundant" based on LOCAL alignment
-    identity alone. Confirmed empirically: two synthetic 1000bp promoters
+    identity alone. I tested this directly: two synthetic 1000bp promoters
     that are 920bp (92%) mutually unrelated, sharing only one 80bp
     conserved motif block at ~95% identity, produce a local-alignment
     identity of 97.6% — comfortably clearing a 90% --dedup-identity
@@ -137,7 +137,7 @@ Note:
     flag (default 0.80), used alongside ``--dedup-identity``.
     (3) REDUNDANCY FILTER, CHAINING: the previous algorithm compared each
     new record only against already-KEPT cluster representatives, not
-    every existing cluster member. Confirmed by direct test: with
+    every existing cluster member. I tested this directly: with
     A~B=91%, B~C=91%, A~C=70% (all below a 90% threshold for the A-C
     pair), depending on arrival order, A and C could both end up dropped
     as "redundant with B" without A and C ever being compared to each
@@ -285,7 +285,7 @@ def _dna_identity_coverage(seq_a: str, seq_b: str) -> tuple[float, float]:
     promoters are genuinely redundant — Smith-Waterman LOCAL alignment finds
     the single best-matching sub-region and reports identity over just that
     region, regardless of how much of either full sequence it represents.
-    Confirmed empirically: two synthetic 1000bp sequences that are 920bp
+    I tested this directly: two synthetic 1000bp sequences that are 920bp
     (92%) mutually unrelated, sharing only one 80bp conserved motif block at
     ~95% identity, report 97.6% LOCAL identity — comfortably clearing a 90%
     threshold despite the sequences being almost entirely different.
@@ -347,7 +347,7 @@ def deduplicate_promoters(
 
     WHY COMPLETE-LINKAGE, NOT "compare against one representative" (v1.5.0):
     the earlier version only compared a new record against each cluster's
-    representative. Confirmed by direct test: with A~B=91%, B~C=91%, and
+    representative. I tested this directly: with A~B=91%, B~C=91%, and
     A~C=70% (all using a 90% threshold), depending on arrival order, A and C
     could both end up dropped as "redundant with B" without A and C ever
     being compared to each other — despite genuinely failing the threshold
