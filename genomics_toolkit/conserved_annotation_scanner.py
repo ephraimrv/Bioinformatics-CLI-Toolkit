@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 Jan Ephraim R. Vallente
 """
 Conserved Annotation Scanner
 
@@ -74,7 +71,7 @@ Note:
 
     v1.3.0: Fixed two bugs and one stale reference found during review.
     (1) ``_normalize_product()`` could reduce a raw /product string to an
-    empty string — confirmed empirically that "Putative", "(hypothetical)",
+    empty string — "Putative", "(hypothetical)",
     and "predicted" (three different, unrelated raw annotations) ALL
     normalize to "". Without a fallback, every such low-information
     annotation across every genome in a scan would silently merge into one
@@ -90,8 +87,8 @@ Note:
     cross-contamination, and keeps "hypothetical" as a substring so the
     existing filter still works on this fallback value too.
     (2) The Tier-2 sort key summed raw CDS feature count
-    (``len(hits)``) per genome as "physical copies" — confirmed empirically
-    that a eukaryotic gene with 3 annotated splice isoforms sharing one
+    (``len(hits)``) per genome as "physical copies" — a eukaryotic gene
+    with 3 annotated splice isoforms sharing one
     locus_tag in one genome, plus one normal single-copy ortholog in a
     second genome, reported "4 total physical copies" when both genomes
     actually have exactly 1 physical locus each (isoforms are alternative
@@ -112,8 +109,11 @@ Note:
     (3) Corrected a stale reference: this docstring referenced
     "gbk_ortholog_finder.py" twice for sequence-based clustering — this
     was the script's former name before it was renamed to
-    pairwise_homolog_finder.py, a more appropriate name for what it does.
-    The rename was never propagated to these two references. Corrected both.
+    pairwise_homolog_finder.py, a more appropriate name for what it does
+    (confirmed via that file's own docstring, which independently
+    describes itself as the Smith-Waterman/BLOSUM62 sequence-based
+    clustering tool). The rename was never propagated to these two
+    references. Corrected both.
 
 Example Usage:
     # Standard run: Find genes conserved in at least 2 genomes, output TSV
@@ -183,7 +183,7 @@ def _normalize_product(product: str) -> str:
 
     EMPTY-STRING FALLBACK (v1.3.0):
         The steps above can reduce some raw /product strings to nothing at
-        all — confirmed empirically that "Putative", "(hypothetical)", and
+        all — "Putative", "(hypothetical)", and
         "predicted" all normalize to "". Returning "" directly would merge
         every such low-information annotation, across every genome scanned,
         into one shared (and meaningless) group key — regardless of how
@@ -418,7 +418,7 @@ def main() -> None:
         # Tier 2 counts DISTINCT locus_tags per genome (v1.3.0), not raw CDS
         # feature count. Eukaryotic GenBank annotations represent alternative
         # splice isoforms as separate CDS features sharing one locus_tag —
-        # confirmed empirically that a gene with 3 isoforms in one genome plus
+        # a gene with 3 isoforms in one genome plus
         # 1 normal ortholog in another previously reported "4 total physical
         # copies" when both genomes actually have exactly 1 physical locus
         # each. Counting distinct locus_tags collapses isoforms of the same

@@ -129,8 +129,8 @@ Note:
     v1.4.0: Five additions found during review, none changing default
     behavior unless their new flag is explicitly passed.
     (1) STATISTICAL SIGNIFICANCE (``--permutations N``, ``permutation_test()``):
-    L2FC alone is an effect size, not a significance test — confirmed
-    empirically that a k-mer occurring 2x in target vs 0x in regulator,
+    L2FC alone is an effect size, not a significance test — a k-mer
+    occurring 2x in target vs 0x in regulator,
     at this script's own default window sizes (143 vs 293 windows at
     k=8), produces L2FC ~3.35 (a reported ~10x enrichment) from a
     difference of two raw counts. ``--permutations`` runs N
@@ -141,8 +141,8 @@ Note:
     it only distinguishes "small-sample noise" from "more extreme than
     this specific composition's chance baseline."
     (2) LOW-COMPLEXITY FILTERING (``--min-entropy``, ``_shannon_entropy()``):
-    overlapping-window k-mer counting inflates repetitive stretches —
-    confirmed empirically that a 10bp run of 'AAAAAAAAAA' produces 5
+    overlapping-window k-mer counting inflates repetitive stretches — a
+    10bp run of 'AAAAAAAAAA' produces 5
     overlapping 'AAAAAA' windows at k=6, counted as 5 occurrences of one
     actual low-complexity region. ``--min-entropy`` excludes windows
     below a Shannon-entropy threshold the same way N-windows already are.
@@ -266,7 +266,7 @@ def _shannon_entropy(window: str) -> float:
     Used by ``get_kmer_counts()``'s optional ``min_entropy`` filter — see
     that function's LOW-COMPLEXITY FILTERING note for why this matters:
     overlapping-window k-mer counting otherwise inflates repetitive
-    stretches (confirmed empirically: a 10bp run of 'AAAAAAAAAA' produces
+    stretches (a 10bp run of 'AAAAAAAAAA' produces
     5 overlapping 'AAAAAA' windows at k=6, counted as if 5 independent
     occurrences of a real motif existed, when only one repetitive region
     does).
@@ -310,7 +310,7 @@ def get_kmer_counts(
     LOW-COMPLEXITY FILTERING (v1.4.0):
         Overlapping-window k-mer counting inherently inflates repetitive
         stretches: a 10bp homopolymer run like 'AAAAAAAAAA' produces 5
-        overlapping 'AAAAAA' windows at k=6 — confirmed empirically — so
+        overlapping 'AAAAAA' windows at k=6 — so
         one biological low-complexity region is counted as if 5
         independent occurrences of a real motif existed. ``min_entropy``
         (Shannon entropy in bits, computed per-window via
@@ -472,7 +472,7 @@ def permutation_test(
     """Computes a two-tailed permutation p-value for each k-mer's observed L2FC.
 
     RATIONALE: ``calc_l2fc()`` reports effect size, not statistical
-    significance. Confirmed empirically: a k-mer occurring just 2x in a
+    significance. A k-mer occurring just 2x in a
     143-window target vs 0x in a 293-window regulator (this script's own
     default --u_target/--u_regulator at k=8) produces an L2FC of ~3.35 —
     a reported ~10x enrichment from a difference of two raw counts. With

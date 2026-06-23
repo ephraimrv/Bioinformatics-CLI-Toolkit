@@ -5,57 +5,57 @@
 """Bioinformatics Standard Utilities
 
 Note:
-    v1.3.0: Added ``extract_upstream_sequence_with_length()``. Found while
-    reviewing comparative_kmer_analyzer.py: ``extract_upstream_sequence()``
-    has always discarded ``actual_upstream`` (the real available length,
-    shorter than requested only when truncated by a contig boundary) to
-    preserve its 4-tuple return contract for existing callers
-    (gbk_promoter_finder.py also unpacks exactly 4 values). This meant a
-    silently-truncated upstream window — e.g. a gene 40bp from its
-    contig's start returning only 40bp when 150bp was requested — was
-    undetectable by any caller. The new function exposes the 5th value;
-    ``extract_upstream_sequence()`` now delegates to it internally and is
-    otherwise unchanged.
+    v1.3.0: Added ``extract_upstream_sequence_with_length()``. While
+    working on comparative_kmer_analyzer.py I noticed
+    ``extract_upstream_sequence()`` has always discarded
+    ``actual_upstream`` (the real available length, shorter than
+    requested only when truncated by a contig boundary) to preserve its
+    4-tuple return contract for existing callers (gbk_promoter_finder.py
+    also unpacks exactly 4 values). That meant a silently-truncated
+    upstream window — e.g. a gene 40bp from its contig's start returning
+    only 40bp when 150bp was requested — was undetectable by any caller.
+    The new function exposes the 5th value; ``extract_upstream_sequence()``
+    now delegates to it internally and is otherwise unchanged.
 
-    v1.4.0: Two additions, both found while validating criticism of
+    v1.4.0: Two additions, both arising from a closer look at
     gbk_promoter_finder.py's downstream consumers.
 
     (1) Added ``IUPAC_TO_REGEX`` and ``translate_iupac_to_regex()``. Raw
-    IUPAC ambiguity codes (W, R, Y, S, K, M, B, D, H, V, N) passed directly
-    to Python's ``re.compile()`` are matched as literal characters, not
-    ambiguity classes — confirmed empirically that searching "TATAWAW"
-    finds zero matches even against a sequence containing the valid
-    instance "TATAAAA". Both ``gbk_promoter_finder.py`` and
-    ``regulon_scanner.py`` advertise "IUPAC/regex motif" support and had
-    this exact bug; the translator is shared here so both (and any future
-    motif-scanning script) stay consistent.
+    IUPAC ambiguity codes (W, R, Y, S, K, M, B, D, H, V, N) passed
+    directly to Python's ``re.compile()`` are matched as literal
+    characters, not ambiguity classes — searching "TATAWAW" finds zero
+    matches even against a sequence containing the valid instance
+    "TATAAAA". Both ``gbk_promoter_finder.py`` and ``regulon_scanner.py``
+    advertise "IUPAC/regex motif" support and had this exact bug; I put
+    the translator here so both (and any future motif-scanning script)
+    stay consistent.
 
     (2) Fixed ``extract_upstream_sequence_with_length()``'s CDS-only
     restriction. Previously any locus_tag that exists only on a non-CDS
-    feature (mRNA, tRNA, rRNA, ncRNA — i.e. any non-coding RNA gene, which
-    by definition has no CDS) raised "Locus tag not found" even though the
-    file plainly contains it. Now falls back through
-    CDS -> mRNA -> tRNA -> rRNA -> ncRNA, trying each only if the previous
-    type isn't present for this locus_tag in the record. CDS is tried
-    first and used whenever present, so prokaryote file behavior
+    feature (mRNA, tRNA, rRNA, ncRNA — i.e. any non-coding RNA gene,
+    which by definition has no CDS) raised "Locus tag not found" even
+    though the file plainly contains it. Now falls back through
+    CDS -> mRNA -> tRNA -> rRNA -> ncRNA, trying each only if the
+    previous type isn't present for this locus_tag in the record. CDS is
+    tried first and used whenever present, so prokaryote file behavior
     (the only case before this fix) is completely unchanged.
 
     v1.4.1: Fixed a second, independent gap in
-    ``extract_upstream_sequence_with_length()``, found while reviewing it
-    against the same root-cause class already fixed in
-    find_gbk_features.py v1.7.5: a eukaryotic gene can have MULTIPLE
-    features of the SAME type (typically CDS) sharing one locus_tag —
-    alternate transcript isoforms with different first coding exons,
-    legitimate per NCBI's own submission conventions (a locus_tag is
-    shared by every CDS/mRNA/exon belonging to one gene). The v1.4.0 fix
-    correctly resolved which FEATURE TYPE to prefer (CDS before mRNA
-    before tRNA...) via ``candidates.setdefault(feature.type, feature)``,
-    but ``setdefault`` silently keeps only the FIRST feature seen for a
-    given type — so if two CDS features carried the same locus_tag at
-    different coordinates, the second was discarded with no warning and
-    no record of the collision.
+    ``extract_upstream_sequence_with_length()``, in the same root-cause
+    class I'd already fixed in find_gbk_features.py v1.7.5: a eukaryotic
+    gene can have MULTIPLE features of the SAME type (typically CDS)
+    sharing one locus_tag — alternate transcript isoforms with different
+    first coding exons, legitimate per NCBI's own submission conventions
+    (a locus_tag is shared by every CDS/mRNA/exon belonging to one
+    gene). The v1.4.0 fix correctly resolved which FEATURE TYPE to
+    prefer (CDS before mRNA before tRNA...) via
+    ``candidates.setdefault(feature.type, feature)``, but ``setdefault``
+    silently keeps only the FIRST feature seen for a given type — so if
+    two CDS features carried the same locus_tag at different
+    coordinates, the second was discarded with no warning and no record
+    of the collision.
 
-    UNLIKE find_gbk_features.py's fix: that script was solving a
+    UNLIKE the find_gbk_features.py fix: that script was solving a
     display/context problem, where taking the full genomic envelope
     (min start, max end across all isoforms) is the correct answer — it
     just needs the gene's whole footprint. This function solves a
@@ -75,12 +75,12 @@ Note:
     silent and unchanged, while making the eukaryotic multi-isoform case
     loud instead of silently wrong.
 
-    v1.4.2: Added ``looks_eukaryotic()``. Found while auditing
-    gbk_promoter_finder.py and comparative_kmer_analyzer.py against
-    regulon_scanner.py: all three ultimately anchor their upstream window
-    on whatever feature this module's CDS-first resolution picks (CDS
-    start, i.e. the translation start / ATG) — never the transcription
-    start site (TSS). regulon_scanner.py already documents itself as
+    v1.4.2: Added ``looks_eukaryotic()``, after noticing
+    gbk_promoter_finder.py and comparative_kmer_analyzer.py both anchor
+    their upstream window, like regulon_scanner.py, on whatever feature
+    this module's CDS-first resolution picks (CDS start, i.e. the
+    translation start / ATG) — never the transcription start site
+    (TSS). regulon_scanner.py already documents itself as
     PROKARYOTE-ONLY for exactly this reason and emits a one-time runtime
     warning when it detects mRNA features mid-scan (a strong eukaryotic
     signal — Prokka/Bakta prokaryote output never emits mRNA features).
@@ -89,38 +89,36 @@ Note:
     own --upstream help text even read "For eukaryotes, consider
     --upstream 2000 or higher," implying a bigger window alone fixes it,
     which it does not. Rather than duplicate the mRNA-detection scan in
-    both files, it's extracted here once and now used by both (see their
-    own changelogs for what changed on their end). regulon_scanner.py's
-    own inline check is left as-is: it's folded into a scan it already
-    performs for other reasons, so calling this separately there would
-    add a redundant full-genome pass for no benefit.
+    both files, I extracted it here once and now use it in both (see
+    their own changelogs for what changed on their end).
+    regulon_scanner.py's own inline check is left as-is: it's folded
+    into a scan it already performs for other reasons, so calling this
+    separately there would add a redundant full-genome pass for no
+    benefit.
 
     v1.4.3: Added ".mpfa" to ``stream_reference_files()``'s recognized
-    extensions. Found while auditing protein_presence_scanner.py and
-    exact_match_homolog_finder.py: both explicitly document ".mpfa" as a
-    supported protein-FASTA reference format and both rely on this
-    function for directory-mode scanning (``-i references_dir/``) — but
-    neither the single-file check nor the directory glob loop here ever
-    included ".mpfa", so a reference file with that extension was
-    silently never even handed to either script's own per-file logic.
-    Purely additive: every previously-recognized extension is unchanged,
-    so no existing caller's behavior is affected for any file that isn't
-    ".mpfa".
+    extensions. Both protein_presence_scanner.py and
+    exact_match_homolog_finder.py document ".mpfa" as a supported
+    protein-FASTA reference format and both rely on this function for
+    directory-mode scanning (``-i references_dir/``) — but neither the
+    single-file check nor the directory glob loop here ever included
+    ".mpfa", so a reference file with that extension was silently never
+    even handed to either script's own per-file logic. Purely additive:
+    every previously-recognized extension is unchanged, so no existing
+    caller's behavior is affected for any file that isn't ".mpfa".
 
-    v1.4.4: Added ``disambiguate_isoform_id()``. Found while reviewing
-    where else the toolkit's "keep every isoform instead of just one
-    representative" pattern had landed: confirmed the same disambiguated-
+    v1.4.4: Added ``disambiguate_isoform_id()``. The same disambiguated-
     identifier logic (``{locus_tag}#{per-isoform-id}``, or
-    ``{locus_tag}#isoform{N}`` as a counter-based fallback) was
+    ``{locus_tag}#isoform{N}`` as a counter-based fallback) had ended up
     independently duplicated inline, twice each, in
     pairwise_homolog_finder.py's ``--keep-all-isoforms`` and
-    universal_promoter_extractor.py's ``--all-isoforms`` — four copies of
-    essentially the same logic across two files, differing only in which
-    qualifier (``protein_id`` vs ``transcript_id``) each happened to look
-    up. All four call sites now use this one shared function instead.
-    No behavior change at any of the four call sites — confirmed by
-    re-running each script's existing isoform-mode tests before and
-    after the swap.
+    universal_promoter_extractor.py's ``--all-isoforms`` — four copies
+    of essentially the same logic across two files, differing only in
+    which qualifier (``protein_id`` vs ``transcript_id``) each happened
+    to look up. All four call sites now use this one shared function
+    instead. No behavior change at any of the four call sites — I
+    re-ran each script's existing isoform-mode tests before and after
+    the swap to be sure.
 """
 
 __author__ = "Jan Ephraim R. Vallente"
@@ -213,10 +211,9 @@ def translate_iupac_to_regex(motif: str) -> str:
     Python's ``re`` module has no built-in concept of IUPAC ambiguity codes —
     compiling a raw pattern like ``"TATAWAW"`` searches for the literal
     letter "W", which never appears in a DNA sequence (only A/C/G/T do), so
-    every motif containing an ambiguity code silently matches nothing. This
-    was confirmed empirically: ``re.compile("(?=(TATAWAW))")`` against a
-    sequence containing the valid TATA-box instance ``TATAAAA`` returns zero
-    matches.
+    every motif containing an ambiguity code silently matches nothing:
+    ``re.compile("(?=(TATAWAW))")`` against a sequence containing the
+    valid TATA-box instance ``TATAAAA`` returns zero matches.
 
     Translation happens character-by-character, so genuine regex syntax the
     caller has written by hand — brackets, quantifiers, groups, anchors —
@@ -276,8 +273,7 @@ def extract_upstream_window(
     if strand == 1:
         upstream_seq = str(record.seq[slice_start:slice_end])
     else:
-        upstream_seq = str(
-            record.seq[slice_start:slice_end].reverse_complement())
+        upstream_seq = str(record.seq[slice_start:slice_end].reverse_complement())
     return upstream_seq, actual_upstream, slice_start, slice_end
 
 
@@ -311,8 +307,8 @@ def extract_upstream_sequence_with_length(
         locus tag that exists only on an ``mRNA``, ``tRNA``, ``rRNA``, or
         ``ncRNA`` feature — e.g. a non-coding RNA gene, which by definition
         has no CDS at all — raised ``ValueError: Locus tag not found``,
-        even though the file plainly contains that locus tag. Confirmed
-        empirically against ``gbk_promoter_finder.py``, the primary caller.
+        even though the file plainly contains that locus tag — I ran into
+        this directly against ``gbk_promoter_finder.py``, the primary caller.
 
         A single record's CDS/mRNA/tRNA/etc. features for one gene
         typically share the same locus_tag but have DIFFERENT coordinates
@@ -440,8 +436,7 @@ def extract_upstream_sequence_with_length(
             return seq, start, end, strand, actual_upstream
 
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError) as e:
-        raise ValueError(
-            f"Failed to parse GenBank file {gbk_path.name}: {e}") from e
+        raise ValueError(f"Failed to parse GenBank file {gbk_path.name}: {e}") from e
 
     raise ValueError(f"Locus tag '{locus_tag}' not found in {gbk_path.name}.")
 
@@ -485,16 +480,16 @@ def disambiguate_isoform_id(
 ) -> str:
     """Builds a disambiguated identifier for one isoform of a multi-isoform locus.
 
-    Confirmed duplicated, inline, in two places each across two different
-    scripts (``pairwise_homolog_finder.py``'s ``--keep-all-isoforms`` and
-    ``universal_promoter_extractor.py``'s ``--all-isoforms`` — 4 copies of
-    essentially the same logic total) before being consolidated here.
-    Both flags exist for the same reason: a "keep only the longest/5'-most
-    representative isoform" default is a reasonable, deterministic choice,
-    but not necessarily the biologically dominant one — when a caller
-    wants every isoform individually instead, each one needs its own
-    addressable identifier rather than colliding on the shared
-    ``locus_tag``.
+    The same logic was independently duplicated, inline, in two places
+    each across two different scripts (``pairwise_homolog_finder.py``'s
+    ``--keep-all-isoforms`` and ``universal_promoter_extractor.py``'s
+    ``--all-isoforms`` — 4 copies of essentially the same logic total)
+    before I consolidated it here. Both flags exist for the same reason:
+    a "keep only the longest/5'-most representative isoform" default is
+    a reasonable, deterministic choice, but not necessarily the
+    biologically dominant one — when a caller wants every isoform
+    individually instead, each one needs its own addressable identifier
+    rather than colliding on the shared ``locus_tag``.
 
     Resolution order:
       1. ``feature.qualifiers[id_qualifier]`` — typically unique per
@@ -611,7 +606,7 @@ def calculate_mature_core(full_protein: str) -> str:
             return mature_peptide[: i + 1]
 
         if i + 5 <= len(mature_peptide):
-            window = mature_peptide[i: i + 5]
+            window = mature_peptide[i : i + 5]
             analyzer = ProteinAnalysis(window)
             avg_hydro = analyzer.gravy()
 
@@ -636,7 +631,7 @@ def smart_open(filename: Path | None) -> Iterator[IO]:
 
 def wrap_fasta(sequence: str, width: int = 60) -> str:
     """Wraps a sequence string into multiple lines for FASTA formatting."""
-    return "\n".join(sequence[i: i + width] for i in range(0, len(sequence), width))
+    return "\n".join(sequence[i : i + width] for i in range(0, len(sequence), width))
 
 
 def base_parser(

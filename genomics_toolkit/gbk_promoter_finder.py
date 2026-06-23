@@ -40,13 +40,13 @@ Note:
     v1.2.0: Fixed three issues found during code review.
     (1) ``-m/--motif`` advertised IUPAC support but raw ambiguity codes
     (W, R, Y, etc.) were passed directly to ``re.compile()``, which has no
-    concept of them — confirmed empirically that "TATAWAW" matched zero
-    times against a sequence containing the valid instance "TATAAAA".
+    concept of them — "TATAWAW" matched zero times against a sequence
+    containing the valid instance "TATAAAA".
     Now uses ``utils.translate_iupac_to_regex()`` (shared with
     ``regulon_scanner.py``, which had the identical bug) before compiling.
     (2) The motif TSV table was previously appended to the bottom of the
     output ``.fasta`` file, corrupting it for any standard FASTA parser
-    (BLAST, MEME, FIMO) — confirmed the appended lines contain characters
+    (BLAST, MEME, FIMO) — the appended lines contain characters
     outside any valid sequence alphabet. Motifs now go to a sibling
     ``.tsv`` file instead, matching ``target_promoter_pipeline.py``.
     (3) ``_get_genome_label()`` only matched ``CDS`` features when looking
@@ -58,8 +58,8 @@ Note:
     script would have raised "Locus tag not found" before ever reaching
     the label lookup, regardless of this function's own fix.
 
-    v1.2.1: Corrected misleading eukaryotic guidance, found while
-    auditing this script against its sibling regulon_scanner.py. Both
+    v1.2.1: Corrected misleading eukaryotic guidance, after comparing
+    this script against its sibling regulon_scanner.py. Both
     scripts ultimately anchor their upstream window on a CDS-start
     coordinate (this script via utils.extract_upstream_sequence(), which
     delegates to utils.extract_upstream_sequence_with_length()'s CDS-first
@@ -212,7 +212,7 @@ def find_motif_regex_iterator(
     # concept of these codes — compiling the raw pattern would search for
     # the literal letter (e.g. "W"), which never appears in a real DNA
     # sequence, so any motif using ambiguity codes would silently match
-    # nothing. Confirmed empirically: "TATAWAW" found zero hits against a
+    # nothing — "TATAWAW" found zero hits against a
     # sequence containing the valid TATA-box instance "TATAAAA" before this
     # fix. Hand-written regex syntax in the motif (brackets, quantifiers,
     # groups) is left untouched — see translate_iupac_to_regex()'s docstring.
@@ -337,11 +337,10 @@ def main() -> None:
             # .fasta file. FASTA is a strict two-line-type format (header
             # lines starting with '>', sequence lines); appending tab-
             # delimited text with a '#' comment line corrupts the file for
-            # any standard parser (BLAST, MEME, FIMO) — confirmed
-            # empirically that the appended lines contain characters
-            # outside any valid sequence alphabet. The motif table now
-            # goes to a sibling .tsv file instead, matching the pattern
-            # already used in target_promoter_pipeline.py.
+            # any standard parser (BLAST, MEME, FIMO) — the appended lines
+            # contain characters outside any valid sequence alphabet. The
+            # motif table now goes to a sibling .tsv file instead, matching
+            # the pattern already used in target_promoter_pipeline.py.
             with open(args.output, "w", encoding="utf-8") as out_file:
                 # NCBI-style FASTA header with | separators
                 fasta_header = (
