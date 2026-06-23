@@ -49,7 +49,7 @@ Note:
     during review.
     (1) ``extract_contig_genes()`` matched contigs with
     ``if contig_name in record.id`` and never broke out of the loop on a
-    match — confirmed empirically that searching "contig_2" on a file
+    match — searching "contig_2" on a file
     containing contig_2/contig_20/contig_21/contig_200 would silently
     merge genes from all four into one combined list, while the printed
     contig_id/length/GC% reflected only whichever record matched last.
@@ -69,7 +69,7 @@ Note:
     (3) ``--type all``'s coding-density statistic summed every feature's
     length regardless of type, including the contig-spanning ``source``
     feature and duplicate ``gene``/``CDS`` pairs at identical
-    coordinates — confirmed empirically that a toy 2-gene contig already
+    coordinates — a toy 2-gene contig already
     reported 144.8% "coding density" this way. Rather than introduce a
     new feature-type allowlist that could still double-count (e.g. a
     eukaryotic gene's overlapping ``mRNA`` and ``CDS`` spans),
@@ -568,9 +568,7 @@ def print_statistics(genes, contig_length, contig_gc, feature_type):
             )
         else:
             total_bp = sum(gene["length"] for gene in genes)
-            coding_density = (
-                (total_bp / contig_length) * 100 if contig_length else 0.0
-            )
+            coding_density = (total_bp / contig_length) * 100 if contig_length else 0.0
             print(f"Total coding bases: {total_bp:,} bp")
             print(f"Coding density: {coding_density:.1f}%")
 

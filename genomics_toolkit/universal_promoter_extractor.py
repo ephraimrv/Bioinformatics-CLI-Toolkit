@@ -133,7 +133,7 @@ Note:
     literal string ``"UNKNOWN"``. On a file where ``/locus_tag`` is
     absent entirely (common for eukaryotic assemblies, GFF3-to-GenBank
     conversions, draft genomes), every such feature collided on that one
-    key. Confirmed empirically: 50 keyword-matching CDS collapsed to 1
+    key. I tested this directly: 50 keyword-matching CDS collapsed to 1
     entry in Pass 1, and 5,000 unannotated mRNA features across an entire
     simulated genome collapsed into a single fabricated "super-gene"
     spanning the most extreme min/max coordinates in the file. All six
@@ -146,7 +146,7 @@ Note:
     IDs from one script's output into the other's ``extract_by_loci()``
     lookup).
 
-    A second, subtler issue was found and fixed in the same pass: simply
+    A second, subtler issue turned up in the same pass: simply
     swapping in ``_resolve_identifier()`` is not sufficient for the
     eukaryotic two-pass design when a gene has NO locus_tag/protein_id/
     gene at all. The CDS pass and the mRNA pass call the resolver on
@@ -164,7 +164,7 @@ Note:
     v1.7.0: Two additions found during review, neither changing default
     behavior unless explicitly requested.
     (1) Added CAVEAT documentation (module docstring) covering four
-    pre-existing, non-code limitations that review confirmed were real
+    pre-existing, non-code limitations I'd left real
     but undocumented: the mRNA-presence eukaryote-detection heuristic
     isn't universal (GFF-to-GenBank conversions, ncRNA-only annotations
     could be eukaryotic with no mRNA feature at all); mRNA start is only
@@ -187,7 +187,7 @@ Note:
     output are completely unaffected unless this flag is explicitly
     passed.
 
-    v1.7.1: Confirmed (by user inspection) that the isoform-disambiguation
+    v1.7.1: The isoform-disambiguation
     logic added in v1.7.0 (``{locus_tag}#{transcript_id}`` /
     ``{locus_tag}#isoform{N}``) was duplicated inline in two places in
     this file, AND duplicated again, separately, in
@@ -196,8 +196,8 @@ Note:
     which qualifier (``transcript_id`` vs ``protein_id``) each looked up.
     Both call sites here now use the new shared
     ``utils.disambiguate_isoform_id()`` instead. No behavior change —
-    confirmed by re-running this file's existing ``--all-isoforms`` tests
-    before and after the swap.
+    I re-ran this file's existing ``--all-isoforms`` tests
+    before and after the swap to be sure.
 
 Examples:
     # Prokaryote (auto-detected)
@@ -366,8 +366,8 @@ def _resolve_identifier(feature, record_id: str) -> str:
     Previously this script (like pairwise_homolog_finder.py before its own
     fix) defaulted every feature lacking ``/locus_tag`` to the literal
     string ``"UNKNOWN"``. On a file where ``/locus_tag`` is absent
-    entirely, every such feature collided on that one key — confirmed
-    empirically to collapse an entire eukaryotic genome's worth of mRNA
+    entirely, every such feature collided on that one key — collapsing
+    an entire eukaryotic genome's worth of mRNA
     features into a single fabricated "super-gene" spanning the most
     extreme min/max coordinates in the file.
 
@@ -420,8 +420,8 @@ def _find_overlapping_fallback_id(
     The CDS pass and the mRNA pass call it on DIFFERENT features — and CDS
     coordinates routinely differ from mRNA coordinates for the same gene,
     because the mRNA spans the full transcript (5' UTR + exons + 3' UTR)
-    while the CDS spans only the coding portion (ATG to stop). Confirmed
-    concretely: a CDS at 1500-2800 and its own mRNA at 1200-3100 (same
+    while the CDS spans only the coding portion (ATG to stop). For
+    example: a CDS at 1500-2800 and its own mRNA at 1200-3100 (same
     gene, no shared qualifiers) resolve to two DIFFERENT fallback strings
     even though they're the same gene — so a literal string match between
     the CDS pass's identifier and the mRNA pass's identifier would never
@@ -510,8 +510,7 @@ def extract_regulatory_regions(
     Raises:
         ValueError: If the GenBank file is malformed or unreadable.
     """
-    resolved_mode = _detect_organism_mode(
-        gbk_path) if mode == MODE_AUTO else mode
+    resolved_mode = _detect_organism_mode(gbk_path) if mode == MODE_AUTO else mode
 
     try:
         with open(gbk_path, "r", encoding="utf-8") as handle:
@@ -778,8 +777,7 @@ def extract_by_loci(
           first feature seen.
         - Scanning stops early once all requested locus tags have been found.
     """
-    resolved_mode = _detect_organism_mode(
-        gbk_path) if mode == MODE_AUTO else mode
+    resolved_mode = _detect_organism_mode(gbk_path) if mode == MODE_AUTO else mode
 
     target_set: set[str] = set(locus_tags)
     remaining: set[str] = set(locus_tags)
@@ -920,8 +918,7 @@ def extract_by_loci(
                                 id_qualifier="transcript_id",
                             )
 
-                            product = cds_products.get(
-                                locus_tag, "Unknown product")
+                            product = cds_products.get(locus_tag, "Unknown product")
                             upstream_seq, actual_upstream = _extract_upstream_seq(
                                 record, start, end, strand, upstream_bp, isoform_key
                             )
@@ -992,8 +989,7 @@ def extract_by_loci(
                                 f"using 5'-most TSS.",
                                 file=sys.stderr,
                             )
-                        product = cds_products.get(
-                            locus_tag, "Unknown product")
+                        product = cds_products.get(locus_tag, "Unknown product")
                         upstream_seq, actual_upstream = _extract_upstream_seq(
                             record,
                             bounds["start"],
@@ -1173,8 +1169,7 @@ def main() -> None:
                     fasta_header = f">{seq_id}_{locus}_{clean_prod}_up{actual_up}"
 
                     out_file.write(f"{fasta_header}\n{seq}\n")
-                    print(
-                        f"      [Hit] {locus} | {prod[:50]}", file=sys.stderr)
+                    print(f"      [Hit] {locus} | {prod[:50]}", file=sys.stderr)
 
         print("\n" + "=" * 50, file=sys.stderr)
         print(
