@@ -36,3 +36,4 @@ visuals/
 *.ptf
 *.pto
 ncbi_dataset/
+.vscode
