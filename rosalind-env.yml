@@ -1,0 +1,21 @@
+name: rosalind
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - biopython
+  - blast
+  - dna_features_viewer
+  - emboss
+  - macsyfinder
+  - mamba
+  - matplotlib
+  - ncbi-datasets-cli
+  - numpy
+  - pandas
+  - perl
+  - perl-bioperl
+  - unzip
+  - vmatch
+
+prefix: "/home/ephraim/miniforge3/envs/rosalind"
