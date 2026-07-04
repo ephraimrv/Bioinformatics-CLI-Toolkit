@@ -18,4 +18,3 @@ dependencies:
   - unzip
   - vmatch
 
-prefix: "/home/ephraim/miniforge3/envs/rosalind"
