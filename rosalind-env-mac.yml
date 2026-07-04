@@ -1,0 +1,20 @@
+name: rosalind
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - biopython
+  - blast
+  - dna_features_viewer
+  - emboss
+  - macsyfinder
+  - mamba
+  - matplotlib
+  - ncbi-datasets-cli
+  - numpy
+  - pandas
+  - perl
+  - perl-bioperl
+  - unzip
+  # vmatch excluded — no osx-arm64 build exists in bioconda
+  # WSL2 version: use rosalind-env.yml (linux-64)
