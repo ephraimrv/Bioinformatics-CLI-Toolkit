@@ -1,0 +1,11 @@
+# BioPerl in its own environment. A fresh solve together with Python 3.14
+# fails (mamba dry runs, Sep 2026). It also brings its own BLAST (2.16 at the
+# time of writing), so the toolkit code should not run in it.
+# Use only for BioPerl work: mamba activate rosalind-perl
+name: rosalind-perl
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - perl
+  - perl-bioperl
