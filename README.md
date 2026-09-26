@@ -48,7 +48,7 @@ other system bioinformatics tools), use conda/mamba:
 ```bash
 git clone https://github.com/ephraimrv/Bioinformatics-CLI-Toolkit.git
 cd Bioinformatics-CLI-Toolkit
-mamba env create -f environment-full-rosalind.yml
+mamba env create -f rosalind-env.yml   # Linux/WSL2 (macOS: rosalind-env-mac.yml)
 mamba activate rosalind
 ```
 

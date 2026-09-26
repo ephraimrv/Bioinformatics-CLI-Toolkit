@@ -1,20 +1,22 @@
+# Linux / WSL2 environment for Bioinformatics-CLI-Toolkit (macOS: rosalind-env-mac.yml).
+# BioPerl lives in rosalind-perl-env.yml, since it does not solve together with Python 3.14.
 name: rosalind
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
 dependencies:
+  - python=3.14
   - biopython
   - blast
   - dna_features_viewer
   - emboss
+  - hmmer
   - macsyfinder
-  - mamba
+  - mafft
   - matplotlib
   - ncbi-datasets-cli
   - numpy
   - pandas
-  - perl
-  - perl-bioperl
+  - tqdm
   - unzip
   - vmatch
-
